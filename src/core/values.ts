@@ -12,6 +12,7 @@ import {
   isTemporal,
   isFunction,
   toFeelFunction,
+  type FeelTemporal,
   type Value,
 } from './types.js';
 
@@ -46,13 +47,52 @@ type FeelRangeLike = {
   toInclusive: boolean;
 };
 
-/** 深相等（列表按元素、上下文按键、时间值按 iso） */
+/**
+ * FEEL 类型名是否同类（`=` 的类型前沿，见 `sameTypeFamily`）。
+ * 比 `typeof` 细：两个 duration 类型是**两个类型**，date 与 time 也不是一类。
+ */
+function feelFamily(v: Value): string {
+  if (v === null) return 'null';
+  if (typeof v === 'string') return 'string';
+  if (typeof v === 'number') return 'number';
+  if (typeof v === 'boolean') return 'boolean';
+  if (isTemporal(v)) return v.category ?? v.kind;
+  if (isList(v)) return 'list';
+  if (isContext(v)) return 'context';
+  if (isRange(v)) return 'range';
+  if (isFunction(v)) return 'function';
+  return 'unknown';
+}
+
+/**
+ * 两个值是否属于同一个 FEEL 类型（`=` 的前提）。
+ *
+ * 这条判据决定「**类型错误**」还是「`false`」（TCK 0068 逐条钉死）：
+ * `false = 0` / `100 = "100"` / `[] = 0` / `{} = []` / `duration("P1Y") = duration("P365D")`
+ * 全是 `errorResult`（跨类型相比无定义），而 `null = 100` 只是 `false`。
+ */
+export function sameTypeFamily(a: Value, b: Value): boolean {
+  return feelFamily(a) === feelFamily(b);
+}
+
+/**
+ * 时间值的相等键。优先用 `./temporal` 档给的 `eqKey`（它对时区/偏移/时长有更细口径），
+ * 没有则退回 `kind|iso`。
+ */
+function temporalKey(t: FeelTemporal): string {
+  return t.eqKey ?? `${t.category ?? t.kind}|${t.iso}`;
+}
+
+/** 深相等（列表按元素、上下文按键、时间值按 `eqKey`） */
 export function deepEquals(a: Value, b: Value): boolean {
   if (a === null && b === null) return true;
   if (a === null || b === null) return false;
 
   if (isTemporal(a) || isTemporal(b)) {
-    return isTemporal(a) && isTemporal(b) && a.kind === b.kind && a.iso === b.iso;
+    if (!isTemporal(a) || !isTemporal(b)) return false;
+    // 两个 duration 类型之间不相等（也不是"未知"，调用方按类型错误处理）
+    if ((a.category ?? a.kind) !== (b.category ?? b.kind)) return false;
+    return temporalKey(a) === temporalKey(b);
   }
 
   if (isRange(a) || isRange(b)) {
@@ -89,9 +129,14 @@ export function compareValues(a: Value, b: Value): number | null {
 
   if (isTemporal(a) || isTemporal(b)) {
     if (!isTemporal(a) || !isTemporal(b)) return null;
-    // date / time / dateTime 互相不可比较（对齐 feelin 行为）
-    if (a.kind !== b.kind) return null;
-    if (a.kind === 'duration') return null;
+    // date / time / dateTime 互相不可比较；两个 duration 类型之间也不可比
+    // （`P1Y` 与 `P365D` 谁长？规范不给答案 → 不可比，TCK 0068 判 Err）
+    if ((a.category ?? a.kind) !== (b.category ?? b.kind)) return null;
+    if (a.kind === 'duration') {
+      // 同类 duration 按「月数 / 秒数」比（TCK 0072/0071）—— 靠 `./temporal` 档给的 order
+      if (a.order === undefined || b.order === undefined) return null;
+      return a.order < b.order ? -1 : a.order > b.order ? 1 : 0;
+    }
     return a.iso < b.iso ? -1 : a.iso > b.iso ? 1 : 0;
   }
 
@@ -129,7 +174,8 @@ export function feelTypeName(v: Value): string {
   if (typeof v === 'number') return 'number';
   if (typeof v === 'string') return 'string';
   if (typeof v === 'boolean') return 'boolean';
-  if (isTemporal(v)) return v.kind === 'dateTime' ? 'date and time' : v.kind;
+  // 时间值优先报 `category`：它把 duration 拆成 FEEL 的**两个**类型（见 types.ts）
+  if (isTemporal(v)) return v.category ?? (v.kind === 'dateTime' ? 'date and time' : v.kind);
   if (isList(v)) return 'list';
   if (isContext(v)) return 'context';
   if (isRange(v)) return 'range';

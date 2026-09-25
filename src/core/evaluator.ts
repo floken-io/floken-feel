@@ -18,6 +18,7 @@ import {
   functionNotAllowed,
   limitExceeded,
   namedArgError,
+  operandTypeError,
   optionError,
   temporalNotLoaded,
   type Diagnostic,
@@ -26,7 +27,9 @@ import { paramNamesOf } from './function-params.js';
 import {
   compareValues,
   deepEquals,
+  feelTypeName,
   rangeContains,
+  sameTypeFamily,
   toFeelContext,
   toNumber,
   toStr,
@@ -688,8 +691,20 @@ export function evaluateNode(
     case 'compare': {
       const l = evaluateNode(node.left, ctx, warnings, builtins, runtime);
       const r = evaluateNode(node.right, ctx, warnings, builtins, runtime);
-      if (node.op === '=') return deepEquals(l, r);
-      if (node.op === '!=') return !deepEquals(l, r);
+      if (node.op === '=' || node.op === '!=') {
+        /*
+         * `=` / `!=` 的类型前沿（TCK 0068 逐条钉死）：
+         * - 任一侧为 `null` → 不抛，按「只有 null = null 成立」判（`100 = null` → false）；
+         * - 两侧都是非 null 但**不同 FEEL 类型** → 类型错误（`false = 0`、`100 = "100"`、
+         *   `[] = 0`、`{} = []`、`duration("P1Y") = duration("P365D")` 官方全是 errorResult）；
+         * - 同类型 → 深相等。
+         */
+        if (l !== null && r !== null && !sameTypeFamily(l, r)) {
+          throw operandTypeError(node.op, feelTypeName(l), feelTypeName(r));
+        }
+        const eq = deepEquals(l, r);
+        return node.op === '=' ? eq : !eq;
+      }
       const c = compareValues(l, r);
       if (c === null) return null;
       switch (node.op) {

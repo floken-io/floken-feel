@@ -3,7 +3,7 @@
   "source": "DMN TCK — github.com/dmn-tck/tck（CC BY-SA，语料不随包分发）",
   "clock": "2026-05-12T00:00:00.000Z",
   "assertions": 2053,
-  "pass": 1532,
+  "pass": 1666,
   "labels": {
     "0050-feel-abs-function": {
       "pass": 17,
@@ -78,7 +78,7 @@
       "total": 9
     },
     "0068-feel-equality": {
-      "pass": 76,
+      "pass": 90,
       "total": 114
     },
     "0069-feel-list": {
@@ -90,11 +90,11 @@
       "total": 142
     },
     "0071-feel-between": {
-      "pass": 28,
+      "pass": 38,
       "total": 38
     },
     "0072-feel-in": {
-      "pass": 250,
+      "pass": 319,
       "total": 327
     },
     "0073-feel-comments": {
@@ -154,7 +154,7 @@
       "total": 18
     },
     "0093-feel-at-literals": {
-      "pass": 16,
+      "pass": 17,
       "total": 19
     },
     "0094-feel-product-function": {
@@ -190,7 +190,7 @@
       "total": 4
     },
     "0103-feel-is-function": {
-      "pass": 47,
+      "pass": 49,
       "total": 50
     },
     "0105-feel-math": {
@@ -254,7 +254,7 @@
       "total": 40
     },
     "1115-feel-date-function": {
-      "pass": 36,
+      "pass": 33,
       "total": 52
     },
     "1116-feel-time-function": {
@@ -262,15 +262,15 @@
       "total": 83
     },
     "1117-feel-date-and-time-function": {
-      "pass": 56,
+      "pass": 55,
       "total": 88
     },
     "1120-feel-duration-function": {
-      "pass": 32,
+      "pass": 50,
       "total": 50
     },
     "1121-feel-years-and-months-duration-function": {
-      "pass": 12,
+      "pass": 36,
       "total": 36
     },
     "1130-feel-interval": {

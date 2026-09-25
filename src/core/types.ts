@@ -65,6 +65,23 @@ export interface FeelTemporal {
    * 两侧都有 `eqKey` 时以它为准，否则退回 `kind + iso`。
    */
   readonly eqKey?: string;
+  /**
+   * **FEEL 类型名**（可选，由 `./temporal` 档生成），比 `kind` 更细。
+   *
+   * `kind` 只有四档，装不下 FEEL 的两个 duration 类型（DMN 1.4 §10.3.1）：
+   * `years and months duration` 与 `days and time duration` 是**两个不同类型**，
+   * 它们互相比较/相等都是类型错误（TCK 0068：`duration("P1Y") = duration("P365D")` → Err）。
+   * 非 duration 时等于 `kind`（`date` / `time` / `date and time`）。
+   */
+  readonly category?: string;
+  /**
+   * 同 `category` 内可比较时的**数值量**（可选，由 `./temporal` 档生成）。
+   *
+   * 只有 duration 需要：`years and months duration` 记**月数**、`days and time duration` 记**秒数**。
+   * 没有它，`duration("P1Y") in <= duration("P2Y")` 这类断言无从排序（TCK 0072/0071 共 70+ 条）。
+   * `kind` 为 date/time/dateTime 时留空 —— 那些按 `iso` 排序即可。
+   */
+  readonly order?: number;
 }
 
 /** FEEL context：键值集合，键可含空格（如 "Mike's daughter"）。 */

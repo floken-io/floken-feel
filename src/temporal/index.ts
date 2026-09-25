@@ -60,12 +60,52 @@ function isoOf(obj: unknown): string {
   return '';
 }
 
+/**
+ * FEEL 类型名（比 `kind` 细一档，见 `FeelTemporal.category`）。
+ * duration 分成**两个** FEEL 类型，判据同 `durationKindOf`：规范串里出现 `D`/`T` 分量即为 days-and-time。
+ */
+function categoryOf(kind: FeelTemporal['kind'], obj: unknown, src: string | undefined, base: string): string {
+  if (kind === 'dateTime') return 'date and time';
+  if (kind !== 'duration') return kind;
+  const body = (src ?? base).replace(/^[-+]?P/, '');
+  return /[DT]/.test(body) ? 'days and time duration' : 'years and months duration';
+}
+
+/**
+ * 同类可比较 duration 的**数值量**：years-and-months 记月数、days-and-time 记秒数。
+ * `orderOf` 与 `categoryOf` 必须同源判定，否则会出现"同类却无数值"的空档。
+ */
+function orderOf(kind: FeelTemporal['kind'], obj: unknown, src: string | undefined, base: string): number | undefined {
+  if (kind !== 'duration') return undefined;
+  const raw = obj as Record<string, number> | null;
+  if (categoryOf(kind, obj, src, base) === 'days and time duration') {
+    return (
+      (raw?.days ?? 0) * 86400 +
+      (raw?.hours ?? 0) * 3600 +
+      (raw?.minutes ?? 0) * 60 +
+      (raw?.seconds ?? 0) +
+      (raw?.milliseconds ?? 0) / 1e3 +
+      (raw?.microseconds ?? 0) / 1e6 +
+      (raw?.nanoseconds ?? 0) / 1e9
+    );
+  }
+  return (raw?.years ?? 0) * 12 + (raw?.months ?? 0);
+}
+
 function wrap(kind: FeelTemporal['kind'], obj: unknown, src?: string): FeelTemporal {
   const iso = isoOf(obj);
-  const eqKey = eqKeyOf(kind, obj, src, iso);
-  return src === undefined
-    ? { __feelTemporal: true, kind, iso, raw: obj, eqKey }
-    : { __feelTemporal: true, kind, iso, raw: obj, src, eqKey };
+  const base: FeelTemporal = {
+    __feelTemporal: true,
+    kind,
+    iso,
+    raw: obj,
+    eqKey: eqKeyOf(kind, obj, src, iso),
+    category: categoryOf(kind, obj, src, iso),
+  };
+  // 可选字段按需挂（`exactOptionalPropertyTypes` 下不能显式写 undefined）
+  const order = orderOf(kind, obj, src, iso);
+  const withOrder: FeelTemporal = order === undefined ? base : { ...base, order };
+  return src === undefined ? withOrder : { ...withOrder, src };
 }
 
 /** 从原始串取「UTC 偏移 / 时区名」标记；`Z` 与 `+00:00` 归一，`+0500` 补冒号；无则空串 */
@@ -134,29 +174,143 @@ function propGetter(key: string): NativeFn {
  * 带**时区名** `@Europe/Paris` 的写法走 `ZonedDateTime`（Plain* 构造器不接受 `@`），
  * 对外仍记 `dateTime` —— `FeelTemporal.kind` 只有四档。
  */
-function construct(kind: FeelTemporal['kind'], ctor: string): NativeFn {
-  return (args) => {
-    const T = getTemporal();
-    const s = toStr(args[0] ?? null);
-    if (!T || s === null) return null;
-    const text = s.trim();
+const DURATION_FIELDS = [
+  'years',
+  'months',
+  'days',
+  'hours',
+  'minutes',
+  'seconds',
+  'milliseconds',
+  'microseconds',
+  'nanoseconds',
+] as const;
 
-    const at = text.indexOf('@');
-    if (at > 0 && kind === 'dateTime') {
-      try {
-        return wrap(kind, T.ZonedDateTime.from(`${text.slice(0, at)}[${text.slice(at + 1)}]`), text);
-      } catch {
-        return null;
-      }
-    }
+/**
+ * **时长规范化**（TCK 1120/1121）：同类分量进位到最大单位。
+ *
+ * - `years and months duration`：月数进位 → `P26M` ⇒ `P2Y2M`
+ * - `days and time duration`：秒数进位到分/时/日 → `PT1000M` ⇒ `PT16H40M`、`PT24H` ⇒ `P1D`
+ *
+ * 为什么要做：FEEL 的时长**值**由总量决定，但 TCK 把期望写成规范形
+ * （`duration("PT1000M")` 期望等于 `duration("PT16H40M")`），
+ * 且 `string()` 也必须给出规范形。规范化后 `iso` / `src` / `eqKey` 三者一致。
+ *
+ * 用 BigInt 逐级取余，避免 `PT999999999M` 这类大值在浮点下丢纳秒。
+ */
+function normalizeDuration(
+  T: TemporalNS,
+  obj: unknown,
+  src: string | undefined,
+): { obj: unknown; text: string } {
+  const raw = (obj ?? {}) as Record<string, number>;
+  const negative = DURATION_FIELDS.some((k) => (raw[k] ?? 0) < 0);
+  const sign = negative ? -1 : 1;
+  const abs = (k: (typeof DURATION_FIELDS)[number]) => BigInt(Math.abs(raw[k] ?? 0));
+  const body = (src ?? isoOf(obj)).replace(/^[-+]?P/, '');
+  const isYm = !/[DT]/.test(body);
 
-    const Ctor = T[ctor];
-    if (!Ctor || typeof Ctor.from !== 'function') return null;
+  let fields: Record<string, number>;
+  if (isYm) {
+    const totalMonths = abs('years') * 12n + abs('months');
+    fields = { years: Number((totalMonths / 12n) * BigInt(sign)), months: Number((totalMonths % 12n) * BigInt(sign)) };
+  } else {
+    const NS = 1_000_000_000n;
+    const DAY = 86_400n * NS;
+    const HOUR = 3_600n * NS;
+    const MINUTE = 60n * NS;
+    let ns =
+      abs('days') * DAY +
+      abs('hours') * HOUR +
+      abs('minutes') * MINUTE +
+      abs('seconds') * NS +
+      abs('milliseconds') * 1_000_000n +
+      abs('microseconds') * 1_000n +
+      abs('nanoseconds');
+    const days = ns / DAY;
+    ns %= DAY;
+    const hours = ns / HOUR;
+    ns %= HOUR;
+    const minutes = ns / MINUTE;
+    ns %= MINUTE;
+    const seconds = ns / NS;
+    ns %= NS;
+    const s = BigInt(sign);
+    fields = {
+      days: Number(days * s),
+      hours: Number(hours * s),
+      minutes: Number(minutes * s),
+      seconds: Number(seconds * s),
+      milliseconds: Number((ns / 1_000_000n) * s),
+      microseconds: Number(((ns / 1_000n) % 1_000n) * s),
+      nanoseconds: Number((ns % 1_000n) * s),
+    };
+  }
+  const d = T.Duration.from(fields);
+  return { obj: d, text: isoOf(d) };
+}
+
+/**
+ * 把 FEEL 的负年/超长年写法补成 Temporal 认的**扩年**形式（6 位带符号）。
+ *
+ * FEEL 照 ISO 8601 写作 `-2018-12-06`，但 Temporal 只接受 `-002018-12-06`；
+ * 直接喂 `-2018-…` 会抛 "Cannot parse"。原串仍保留在 `src` 里，
+ * 供 `string()` 还原 FEEL 写法（TCK 1117 期望 `"-99999-12-31T11:22:33"`，不补零）。
+ */
+function expandYear(text: string): string {
+  const m = /^([+-])(\d{1,5})-/.exec(text);
+  if (!m) return text;
+  return `${m[1]}${(m[2] ?? '').padStart(6, '0')}-${text.slice(m[0].length)}`;
+}
+
+/**
+ * 由「清洗后的待解析串 + 原始串」造时间值。
+ *
+ * 分开传两个串：解析要用 Temporal 认的形式（扩年、补 `.0`），
+ * 而 `src` 要留 FEEL 原文（`string()` 与 `.timezone` 要还原人写的样子）。
+ */
+function parseTemporal(kind: FeelTemporal['kind'], ctor: string, text: string, src: string): Value {
+  const T = getTemporal();
+  if (!T) return null;
+
+  const at = text.indexOf('@');
+  if (at > 0 && kind === 'dateTime') {
     try {
-      return wrap(kind, Ctor.from(text), text);
+      return wrap(kind, T.ZonedDateTime.from(`${text.slice(0, at)}[${text.slice(at + 1)}]`), src);
     } catch {
       return null;
     }
+  }
+
+  const Ctor = T[ctor];
+  if (!Ctor || typeof Ctor.from !== 'function') return null;
+  try {
+    const parsed = Ctor.from(text);
+    if (kind === 'duration') {
+      // 时长的 `src` 用**规范形**（规范化改变了值本身的写法，原文已无意义）
+      const norm = normalizeDuration(T, parsed, text);
+      return wrap(kind, norm.obj, norm.text);
+    }
+    return wrap(kind, parsed, src);
+  } catch {
+    return null;
+  }
+}
+
+/** 纯时间串（可带 `Z` / `±HH:MM` 偏移）→ 本地字段串；Temporal 的 PlainTime 不收偏移 */
+function localTimeOf(text: string): string {
+  return text.replace(/(?:Z|[+-]\d\d:?\d\d)$/i, '');
+}
+
+function construct(kind: FeelTemporal['kind'], ctor: string): NativeFn {
+  return (args) => {
+    const s = toStr(args[0] ?? null);
+    if (s === null) return null;
+    const original = s.trim();
+    // ISO 8601 不允许 `PT0.S` 这种"小数点后直接跟单位"，但 TCK 1120#011 要求按 0 秒解析
+    const text =
+      kind === 'duration' ? original.replace(/(\d)\.(?=[A-Z]|$)/g, '$1.0') : expandYear(original);
+    return parseTemporal(kind, ctor, text, original);
   };
 }
 
@@ -177,12 +331,20 @@ function atLiteralFn(): NativeFn {
     if (!T || s === null) return null;
     const text = s.trim();
 
-    if (/^-?P/i.test(text)) return construct('duration', 'Duration')([text], EMPTY);
+    if (/^-?P/i.test(text)) return parseTemporal('duration', 'Duration', text, text);
 
     const zoneAt = text.indexOf('@');
     if (zoneAt > 0) {
-      const stamp = text.slice(0, zoneAt);
+      const stamp = expandYear(text.slice(0, zoneAt));
       const zone = text.slice(zoneAt + 1);
+      /*
+       * 纯时间 + 时区名（`@"23:00:50@Australia/Melbourne"`）：Temporal 没有 OffsetTime，
+       * 也没有"无日期的带时区时刻"，故按本地字段构造 PlainTime，
+       * 时区名只留在 `src` 里供 `eqKey` 与 `.timezone` 属性用（TCK 0093/0103）。
+       */
+      if (/^\d\d:\d\d/.test(stamp)) {
+        return parseTemporal('time', 'PlainTime', localTimeOf(stamp), text);
+      }
       try {
         return wrap('dateTime', T.ZonedDateTime.from(`${stamp}[${zone}]`), text);
       } catch {
@@ -190,9 +352,15 @@ function atLiteralFn(): NativeFn {
       }
     }
 
-    if (/^\d\d:\d\d/.test(text)) return construct('time', 'PlainTime')([text], EMPTY);
-    if (/^[+-]?\d{4,}-\d\d-\d\d$/.test(text)) return construct('date', 'PlainDate')([text], EMPTY);
-    return construct('dateTime', 'PlainDateTime')([text], EMPTY);
+    // 带偏移的纯时间（`@"23:00:50Z"` / `@"10:30:11+11:00"`）也要收：
+    // Temporal 的 PlainTime 会拒收 `Z`，故先剥掉偏移，偏移只留在 `src` 供 `eqKey` 用。
+    if (/^\d\d:\d\d/.test(text)) {
+      return parseTemporal('time', 'PlainTime', localTimeOf(text), text);
+    }
+    if (/^[+-]?\d{4,}-\d\d-\d\d$/.test(text)) {
+      return parseTemporal('date', 'PlainDate', expandYear(text), text);
+    }
+    return parseTemporal('dateTime', 'PlainDateTime', expandYear(text), text);
   };
 }
 
@@ -245,12 +413,18 @@ function timezoneOf(v: Value): Value {
   return at > 0 ? src.slice(at + 1) : null;
 }
 
-/** 接受字符串或 date 时间值，统一转成底层 PlainDate */
+/**
+ * 取「有年月日字段」的时间值（date / date and time，含带时区的），
+ * 字符串则按 PlainDate 解析。
+ *
+ * date and time 也放行是因为 `years and months duration(from, to)` 的 TCK 用例
+ * 大量传 date-time（1121#013~#026）—— 月差只看年月日，时分秒与时区一律忽略。
+ */
 function toDateLike(v: Value): any | null {
   const T = getTemporal();
   if (!T) return null;
   if (isTemporal(v)) {
-    return v.kind === 'date' ? (v.raw as any) : null;
+    return v.kind === 'date' || v.kind === 'dateTime' ? (v.raw as any) : null;
   }
   const s = toStr(v);
   if (s === null) return null;
@@ -261,6 +435,19 @@ function toDateLike(v: Value): any | null {
   }
 }
 
+/**
+ * `years and months duration(from, to)` = 两点之间的**整月数**（DMN 1.4 §10.3.4.4）。
+ *
+ * 规则从 TCK 1121 的 36 条用例反推并逐条验算：
+ * `months = trunc( (to.y-from.y)*12 + (to.m-from.m) + (to.day-from.day)/daysInMonth(from) )`，
+ * **向零截断**。几个关键点：
+ * - 时分秒与时区**完全不参与**（#019 两端偏移不同、#024 两端时分不同，结果都只看年月日）；
+ * - 用 `from` 所在月的天数做分母（#025 / #032 只有这个分母能对上）；
+ * - 向零截断使「同月但倒序」得 0 而非 -1（#013 期望 `P0M`）。
+ *
+ * 为什么不用 `Temporal.until({largestUnit:'months'})`：它返回带 `days` 的完整跨度
+ * （`P20M2D`），而 FEEL 这个函数按定义**只给年月**（`P1Y8M`）。
+ */
 function yearsAndMonthsDuration(args: Value[]): Value {
   const T = getTemporal();
   if (!T) return null;
@@ -268,7 +455,11 @@ function yearsAndMonthsDuration(args: Value[]): Value {
   const b = toDateLike(args[1] ?? null);
   if (!a || !b) return null;
   try {
-    return wrap('duration', a.until(b, { largestUnit: 'months' }));
+    const base = (b.year - a.year) * 12 + (b.month - a.month);
+    const daysInMonth = a.daysInMonth ?? 30;
+    const months = Math.trunc(base + (b.day - a.day) / daysInMonth);
+    const d = T.Duration.from({ years: Math.trunc(months / 12), months: months % 12 });
+    return wrap('duration', d, isoOf(d));
   } catch {
     return null;
   }

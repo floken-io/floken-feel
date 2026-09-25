@@ -297,6 +297,22 @@ export function argTypeError(
 }
 
 /**
+ * **二元运算两侧类型不符**（`false = 0`、`100 = "100"`、`[] = 0`、`{} = []`）。
+ *
+ * TCK 0068 把这批全判为 `errorResult`：跨类型的相等/大小比较在 FEEL 里没有定义，
+ * 不是「未知」（`null`）。注意与 `null` 的区别 —— `100 = null` 只是 `false`。
+ */
+export function operandTypeError(op: string, leftType: string, rightType: string): FeelTypeError {
+  return new FeelTypeError(
+    `Operator '${op}' requires both operands to be of the same type but got ${leftType} and ${rightType}`,
+    {
+      code: FEEL_ERROR_CODES.EVAL_ARG_TYPE,
+      details: { operator: op, leftType, rightType },
+    },
+  );
+}
+
+/**
  * 实参**取值越界**（类型对、但超出规范允许的范围）。
  * 目前只有舍入家族的 `scale`：DMN 1.4 §10.3.4.7 限定为 `[-6111, 6176]`
  * （TCK 1141~1144 用 `(-6111 - 1)` 与 `(6176 + 1)` 把两端都测了）。
