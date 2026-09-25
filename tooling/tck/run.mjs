@@ -58,14 +58,19 @@ const cases = JSON.parse(fs.readFileSync(CASES, 'utf8'));
 const TYPES_PATH = path.resolve(arg('types', 'tmp/tck/types.json'));
 const TYPES = fs.existsSync(TYPES_PATH) ? JSON.parse(fs.readFileSync(TYPES_PATH, 'utf8')) : {};
 
-/**
- * IGNORED 名单（NFR-F14 的第三态）。**整组**登记，理由逐条写在文件里；
- * 未命中 → 空对象（照旧全量跑分）。
+/*
+ * IGNORED 名单（NFR-F14 的第三态）。理由逐条写在文件里；未命中 → 空（照旧全量跑分）。
+ *
+ * 两个粒度：`IGNORED[label]` 整组、`IGNORED_CASES["label#id"]` 单条。
+ * 单条粒度给「组内只有这一条越界」的情形（如 0092#013 的 decisionService 调用），
+ * 免得为了一条就把整组 18 条都免掉 —— 那是把账做糊涂，不是把题做对。
  */
 const IGNORED_PATH = path.resolve(arg('ignored', 'tooling/tck/ignored.json'));
-const IGNORED = fs.existsSync(IGNORED_PATH)
-  ? (JSON.parse(fs.readFileSync(IGNORED_PATH, 'utf8')).labels ?? {})
+const IGNORED_FILE = fs.existsSync(IGNORED_PATH)
+  ? JSON.parse(fs.readFileSync(IGNORED_PATH, 'utf8'))
   : {};
+const IGNORED = IGNORED_FILE.labels ?? {};
+const IGNORED_CASES = IGNORED_FILE.cases ?? {};
 
 /** R5：固定时钟（2026-05-12 是有意选的"周二"，能同时暴露周历/工作日类边界） */
 const CLOCK = () => new Date('2026-05-12T00:00:00.000Z');
@@ -178,14 +183,16 @@ for (const c of cases) {
 
   /*
    * NFR-F14：`TestResult.Result` 只有 SUCCESS / ERROR / IGNORED 三态。
-   * 被登记为 IGNORED 的**整组**不进 ✓/✗ —— 它们不是"我们做错了"，
-   * 而是规范允许不实现的能力（当前唯一一类：`external {java: …}` 需要 JVM）。
-   * 名单在 `tooling/tck/ignored.json`，**理由逐条写在文件里**。
+   * 被登记为 IGNORED 的断言不进 ✓/✗ —— 它们不是"我们做错了"，
+   * 而是**该断言考的能力不属于 FEEL 表达式层**（属宿主 / DMN 类型声明层职责）。
+   * 名单在 `tooling/tck/ignored.json`，**理由逐条写在文件里**；
+   * 粒度为整组 `label` 或单条 `label#id`。
    */
-  if (IGNORED[c.label]) {
+  const ignoredReason = IGNORED[c.label] ?? IGNORED_CASES[`${c.label}#${c.id}`] ?? null;
+  if (ignoredReason) {
     rec.status = 'ignored';
     rec.reason = 'ignored';
-    rec.detail = IGNORED[c.label];
+    rec.detail = ignoredReason;
     results.push(rec);
     continue;
   }
@@ -307,6 +314,18 @@ const ignoredCount = results.length - counted.length;
 const strictPass = counted.filter((r) => r.status === 'pass' && !r.loose).length;
 const loosePass = counted.filter((r) => r.status === 'pass').length;
 
+/*
+ * 严格口径缺口 = `errorResult="true"`（官方期望抛错）而我们**返回了 null**。
+ * 这些在宽松口径下算 pass，在严格口径下算 fail —— 严格口径才是 F3 闸门判据②的目标，
+ * 所以这份清单不是"参考信息"，而是**通往 100% 的待办列表**（按组聚合，便于整组攻克）。
+ */
+const looseRecs = counted.filter((r) => r.loose);
+const looseByLabel = new Map();
+for (const r of looseRecs) {
+  looseByLabel.set(r.label, (looseByLabel.get(r.label) ?? 0) + 1);
+}
+const looseTop = [...looseByLabel.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
 // ---------- 按 label 汇总 ----------
 
 const byLabel = new Map();
@@ -372,6 +391,20 @@ for (const l of worst) {
   console.log(`    ${l.label.padEnd(38)} ${String(l.pass).padStart(4)}/${String(l.total).padEnd(4)}  缺 ${l.miss}`);
 }
 
+/*
+ * 严格口径缺口的按组分布。**这是通往 100% 的待办列表**（不是参考信息）：
+ * 每一条都要么是"我们该抛错却给了 null"，要么是"该条本就该登记 IGNORED"。
+ */
+if (looseTop.length) {
+  console.log('');
+  console.log(
+    `  严格口径缺口（errorResult=true 但我们返回 null）${looseRecs.length} 条 / ${looseTop.length} 组:`,
+  );
+  for (const [l, n] of looseTop.slice(0, Number(arg('top', '20')))) {
+    console.log(`    ${l.padEnd(38)} ${String(n).padStart(4)}`);
+  }
+}
+
 const showFail = Number(arg('show-fail', '0'));
 if (showFail > 0) {
   console.log('');
@@ -433,6 +466,15 @@ const json = {
   loosePass,
   labels,
   reasons: reasons.map((r) => ({ reason: r.reason, count: r.count, labels: r.labels.size })),
+  looseTotal: looseRecs.length,
+  loose: looseRecs.map((r) => ({
+    label: r.label,
+    id: r.id,
+    decision: r.decision,
+    expression: r.expression,
+    context: r.context,
+    expected: r.expected,
+  })),
   failed: results
     .filter((r) => r.status !== 'pass')
     .map((r) => ({
@@ -455,5 +497,6 @@ if (argv.includes('--json')) {
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stringify(json, null, 2), 'utf8');
   fs.writeFileSync(path.join(outDir, 'failed.json'), JSON.stringify(json.failed, null, 2), 'utf8');
-  console.log(`\n  产物: tmp/tck/results.json, tmp/tck/failed.json`);
+  fs.writeFileSync(path.join(outDir, 'loose.json'), JSON.stringify(json.loose, null, 2), 'utf8');
+  console.log(`\n  产物: tmp/tck/results.json, tmp/tck/failed.json, tmp/tck/loose.json`);
 }

@@ -106,8 +106,22 @@ describe('floken-feel · TCK 修复回归 · 区间（Range 一等公民）', ()
     expect(evaluate('9 in [[2..4], [1..3]]').value).toBe(false);
   });
 
-  it('三值逻辑：输入为 null → null；类型不可比 → null', () => {
-    expect(evaluate('null in [1..10]').value).toBe(null);
+  /*
+   * ★ `null in <区间>` → **抛**（TCK 0072#null_001），与 `between` 同口径（0071）。
+   * 注意区分"区间**端点**是 null"（`null_001_a~d`：开→null、闭→抛，见上一条）与
+   * "**被测试值**是 null"（本条）：前者端点语义明确，后者在 FEEL 里没有定义。
+   */
+  it('被测试值是 null 且域是区间 → 抛（TCK 0072 null_001）', () => {
+    let code = '';
+    try {
+      evaluate('null in [1..10]');
+    } catch (e: any) {
+      code = e?.code ?? '';
+    }
+    expect(code).toBe('FEEL_EVAL_ARG_TYPE');
+  });
+
+  it('类型不可比 → null（未知）', () => {
     expect(evaluate('"a" in <= 10').value).toBe(null);
   });
 });
@@ -647,5 +661,183 @@ describe('floken-feel · TCK 修复回归 · 正则方言（1111 / 1109）', () 
     // `.` 是正则元字符（匹配任意字符），要字面点得写 `\.`
     expect(v('replace("a.c", "\\.", "[$0]")')).toBe('a[.]c');
     expect(v('replace("aaa", "a", "b")')).toBe('bbb');
+  });
+});
+
+/**
+ * 第六轮（2026-09-26 续）：**严格参数校验** —— 该抛错而不是返回 null。
+ *
+ * 这一整块来自同一条发现：B 口径的「严格口径」（官方 `errorResult="true"`）比宽松口径
+ * 少 64 条，全部是「引擎给了 null，官方期望抛错」。它们集中在**内置函数与运算符的
+ * 形参类型**上：FEEL 里 `null` 实参不是"未知值"，是**类型错误** —— 三值语义管的是
+ * "值存在但未知"，不是"实参类型不对"。
+ */
+describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 null）', () => {
+  const v = (src: string) => evaluate(src).value;
+  /** 抛出的错误码；没抛返回 `null`（错误码在 `e.code` 上，不在 message 里） */
+  const code = (src: string): string | null => {
+    try {
+      evaluate(src);
+      return null;
+    } catch (e) {
+      return (e as { code?: string }).code ?? null;
+    }
+  };
+  /** 类型错误统一是 `FEEL_EVAL_ARG_TYPE`（argTypeError 与 operandTypeError 共用） */
+  const ARG_TYPE = 'FEEL_EVAL_ARG_TYPE';
+
+  it('duration 构造器：null / 错类型 / 非法字面量 → 抛（TCK 1120）', () => {
+    // 类型不符（null / number / list）→ FEEL_EVAL_ARG_TYPE
+    for (const src of ['duration(null)', 'duration(2017)', 'duration([])']) {
+      expect(code(src), src).toBe(ARG_TYPE);
+    }
+    /*
+     * 类型是字符串但**不是合法 ISO 8601 时长字面量** → FEEL_EVAL_TEMPORAL_VALUE
+     * （走的是时间构造器的 shapeFail，与 `date("…")` 的坏写法同一个出口）。
+     */
+    for (const src of [
+      'duration("")',
+      'duration("P")',
+      'duration("P0")',
+      'duration("1Y")',
+      'duration("1D")',
+      'duration("P1H")',
+      'duration("P1S")',
+      'duration("2012T-12-2511:00:00Z")',
+    ]) {
+      expect(code(src), src).toBe('FEEL_EVAL_TEMPORAL_VALUE');
+    }
+    // arity 0 是**实参个数**错误，不是类型错误
+    expect(code('duration()')).toBe('FEEL_EVAL_ARG_COUNT');
+    // 合法用法不受影响
+    expect(v('string(duration("P1Y"))')).toBe('P1Y');
+    expect(v('string(duration("P1DT2H"))')).toBe('P1DT2H');
+  });
+
+  it('years and months duration：null / 错类型 → 抛（TCK 1121）', () => {
+    for (const src of [
+      'years and months duration(null, null)',
+      'years and months duration(date("2017-08-11"), null)',
+      'years and months duration(date and time("2017-12-31T13:00:00"), null)',
+      'years and months duration(null, date("2017-08-11"))',
+      'years and months duration([], [])',
+    ]) {
+      expect(code(src), src).toBe(ARG_TYPE);
+    }
+    // 单参 / 0 参先被实参个数拦下（#001 `(null)`、#028 `(2017)`、#029 `("2012T-…")` 都是 1 参）
+    for (const src of [
+      'years and months duration(null)',
+      'years and months duration(2017)',
+      'years and months duration("2012T-12-2511:00:00Z")',
+      'years and months duration()',
+    ]) {
+      expect(code(src), src).toBe('FEEL_EVAL_ARG_COUNT');
+    }
+    // 合法用法不受影响（整月数，向零截断：25 个月 + 20/31 → 25 → P2Y1M）
+    expect(
+      v('string(years and months duration(date("2017-08-11"), date("2019-10-01")))'),
+    ).toBe('P2Y1M');
+  });
+
+  it('`**` 只对 number 有定义（TCK 0075#002~#011）', () => {
+    for (const src of [
+      '"foo" ** 4',
+      'true ** 4',
+      'date("2018-12-10") ** 4',
+      'time("10:30:00") ** 4',
+      'date and time("2018-12-10") ** 4',
+      'duration("P2Y") ** 4',
+      'duration("P2D") ** 4',
+      '{a: 2} ** 4',
+      '[2] ** 4',
+      '(function() "foo") ** 4',
+    ]) {
+      expect(code(src), src).toBe(ARG_TYPE);
+    }
+    // 合法用法不受影响：幂高于乘法、低于一元、左结合
+    expect(v('5 + 2**5')).toBe(37);
+    expect(v('1.2*10**3')).toBe(1200);
+    expect(v('3 ** 4 ** 5')).toBe(3486784401);
+  });
+
+  it('调用非函数值 → 抛 FEEL_EVAL_NOT_CALLABLE（TCK 1131）', () => {
+    for (const src of [
+      'non_existing_function()',
+      'null()',
+      '"some_func"()',
+      '"abs"(-1)',
+      '@"2023-11-11"()',
+      '123()',
+      'true()',
+      'false()',
+    ]) {
+      expect(code(src), src).toBe('FEEL_EVAL_NOT_CALLABLE');
+    }
+    // 正常的调用不受影响
+    expect(v('abs(-1)')).toBe(1);
+    // ⚠️ 裸变量**取值**仍是降级（诊断 + null），只有"调用"才是抛
+    expect(v('nope')).toBe(null);
+  });
+
+  it('`get value` 的两个形参都有类型（TCK 0080）', () => {
+    for (const src of [
+      'get value("foo", "foo")',
+      'get value({a: "foo"}, 123)',
+      'get value(null, "a")',
+      'get value({a: "foo"}, null)',
+      'get value(null, null)',
+    ]) {
+      expect(code(src), src).toBe(ARG_TYPE);
+    }
+    // 键不存在是"值存在但没这个键" → null，不是错误
+    expect(v('get value({a: "foo"}, "b")')).toBe(null);
+    expect(v('get value({a: "foo"}, "a")')).toBe('foo');
+  });
+
+  it('`not` 只收 boolean 与 null（TCK 0066）', () => {
+    for (const src of ['not(0)', 'not(1)', 'not("true")']) {
+      expect(code(src), src).toBe(ARG_TYPE);
+    }
+    // `not(null)` 是真正的未知 → null（三值）
+    expect(v('not(null)')).toBe(null);
+    expect(v('not(true)')).toBe(false);
+  });
+
+  it('`split` / `matches` / `contains` 的 null 实参 → 抛（0067 / 1111 / 1110）', () => {
+    for (const src of [
+      'split(null, null)',
+      'split("foo", null)',
+      'split(null, ",")',
+      'matches(null, "pattern")',
+      'matches("input", null)',
+      'contains(null, null)',
+      'contains(null, "bar")',
+      'contains("bar", null)',
+    ]) {
+      expect(code(src), src).toBe(ARG_TYPE);
+    }
+    // 可选形参 flags 显式传 null 仍按"无标志"处理（不是错误）
+    expect(v('matches("abracadabra", "bra", null)')).toBe(true);
+    // 合法用法不受影响
+    expect(v('contains("foobar", "oob")')).toBe(true);
+    expect(v('split("a,b,c", ",")')).toEqual(['a', 'b', 'c']);
+  });
+
+  it('`@"…"` 字面量写错 → 抛（TCK 0093#test_001）', () => {
+    // `@"…"` 走的是时间构造器，故是 `FEEL_EVAL_TEMPORAL_VALUE` 而非 ARG_TYPE
+    expect(code('@"foo"')).toBe('FEEL_EVAL_TEMPORAL_VALUE');
+    // 合法字面量不受影响
+    expect(v('string(@"2020-01-01")')).toBe('2020-01-01');
+    expect(v('string(@"P1Y")')).toBe('P1Y');
+  });
+
+  /*
+   * 0057#009 `{a: 1}.b`、#010 `null.b`：TCK 标了 `errorResult="true"`，
+   * 但**用例描述自己写着 "results in null"**，DMN 1.4 §10.3.1 也说键不存在是 null。
+   * 与 1111#K2-1 同属「TCK 内部矛盾」→ **从规范**，保持 null，并钉死在这里防止误改。
+   */
+  it('上下文取不存在的键 → null（TCK 0057#009/#010 与规范冲突，从规范）', () => {
+    expect(v('{a: 1}.b')).toBe(null);
+    expect(v('null.b')).toBe(null);
   });
 });

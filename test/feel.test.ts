@@ -159,10 +159,20 @@ describe('floken-feel · 内置函数', () => {
     expect(evaluate('sort([3, 1, 2])').value).toEqual([1, 2, 3]);
   });
 
-  it('未知函数 → null + warning', () => {
-    const r = evaluate('nope(1)');
-    expect(r.value).toBe(null);
-    expect(r.warnings[0]?.code).toBe('FEEL_EVAL_NO_FUNCTION');
+  /*
+   * ★ 调用目标不是函数 → **抛**（TCK 1131 的 8 条全是 errorResult）。
+   * 「调用失败给 null + warning」是把**类型错误**当**未知值**：三值语义管的是
+   * "值存在但未知"，而 `nope(1)` 里被调者根本不是函数 —— 换输入救不回
+   * （除非换一个函数进去，那是换表达式的语义环境，不是换值）。
+   */
+  it('未知函数 → 抛 FEEL_EVAL_NOT_CALLABLE（不是降级为 null）', () => {
+    let code = '';
+    try {
+      evaluate('nope(1)');
+    } catch (e: any) {
+      code = e?.code ?? '';
+    }
+    expect(code).toBe('FEEL_EVAL_NOT_CALLABLE');
   });
 });
 

@@ -8,7 +8,7 @@
 import { isList, type NativeFn, type Value } from '../core/types.js';
 import { feelTypeName, tripleAnd, tripleNot, tripleOr } from '../core/values.js';
 import { argCountError, argTypeError } from '../core/errors.js';
-import { spread } from './helpers.js';
+import { spread, requireArity } from './helpers.js';
 
 /**
  * `all` / `any` 的实参整形（TCK 0059 / 0060 逐条钉死）。
@@ -47,7 +47,19 @@ function checkBooleans(items: Value[], fnName: string): Value[] {
 }
 
 export const BOOLEAN_BUILTINS: Record<string, NativeFn> = {
-  not: (a) => tripleNot(a[0] ?? null),
+  /*
+   * `not(value)`：只接受 `boolean` 与 `null`（三值）。数字 / 字符串 → **抛**
+   * （TCK 0066#003_b not(0)、#003_c not(1)、#003_d not("true") 全是 errorResult）。
+   * `not(null)` 仍是 `null` —— 那是真正的"未知"，不是类型错误。
+   */
+  not: (a) => {
+    requireArity(a, 'not', 1);
+    const v = a[0] ?? null;
+    if (v !== null && typeof v !== 'boolean') {
+      throw argTypeError('not', 'value', 'boolean', feelTypeName(v));
+    }
+    return tripleNot(v);
+  },
   and: (a) => tripleAnd(spread(a)),
   or: (a) => tripleOr(spread(a)),
   all: (a) => tripleAnd(logicalArgs(a, 'all')),

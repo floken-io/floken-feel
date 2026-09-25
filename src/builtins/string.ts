@@ -240,14 +240,29 @@ function compileRegex(fnName: string, pattern: string, flags: string, global: bo
 }
 
 /** 取字符串实参（**不接受 null**：这些函数的形参在 DMN 里是非空 string） */
+/**
+ * 取字符串实参：类型不符 → 抛；`null` **默认也抛**（`nullOk` 仅给可选参数用）。
+ *
+ * ★ `null` 这条是 TCK 钉死的：1111 `#fn-null-input matches(null,"pattern")`、
+ * `#fn-null-pattern matches("input",null)`，0067 `#008 split(null,null)` / `#008_a`
+ * / `#008_b` 全是 `errorResult`。「参数给了 null 就返回 null」是把**类型错误**
+ * 当成**未知值** —— 三值语义管的是"值存在但未知"，不是"实参类型不对"。
+ *
+ * ⚠️ `flags` 是**可选**形参（`replace(s, p, r, flags)` 第四个），显式省略与显式
+ * 传 null 都按"无标志"处理，故只有它走 `nullOk`。
+ */
 function reqString(
   args: readonly Value[],
   i: number,
   fnName: string,
   param: string,
+  nullOk = false,
 ): string | null {
   const v = args[i] ?? null;
-  if (v === null) return null;
+  if (v === null) {
+    if (nullOk) return null;
+    throw argTypeError(fnName, param, 'string', 'null');
+  }
   if (typeof v !== 'string') throw argTypeError(fnName, param, 'string', feelTypeName(v));
   return v;
 }
@@ -262,10 +277,19 @@ function translateReplacement(rep: string): string {
 
 export const STRING_BUILTINS: Record<string, NativeFn> = {
   // ----- 判定 -----
+  /*
+   * `contains(string, match)`：两个实参都必须是字符串，**null 也抛**
+   * （TCK 1110#001 contains(null,null)、#002 contains(null,"bar")、#003
+   * contains("bar",null) 全是 errorResult）。
+   *
+   * ⚠️ `starts with` / `ends with` 仍按 toStr+null 处理：TCK 对它们**没有**
+   * 这类 errorResult 用例，改了既不加分也无从验证，故不动。
+   */
   contains: (a) => {
-    const s = toStr(a[0] ?? null);
-    const m = toStr(a[1] ?? null);
-    return s === null || m === null ? null : s.includes(m);
+    requireArity(a, 'contains', 2);
+    const s = reqString(a, 0, 'contains', 'string') as string;
+    const m = reqString(a, 1, 'contains', 'match') as string;
+    return s.includes(m);
   },
   'starts with': (a) => {
     const s = toStr(a[0] ?? null);
@@ -329,27 +353,25 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
   // ----- 正则 -----
   replace: (a) => {
     requireArity(a, 'replace', 3, 4);
-    const s = reqString(a, 0, 'replace', 'input');
-    const pattern = reqString(a, 1, 'replace', 'pattern');
-    if (s === null || pattern === null) return null;
-    const rep = reqString(a, 2, 'replace', 'replacement');
-    if (rep === null) return null;
-    const flags = a.length > 3 ? (reqString(a, 3, 'replace', 'flags') ?? '') : '';
+    const s = reqString(a, 0, 'replace', 'input') as string;
+    const pattern = reqString(a, 1, 'replace', 'pattern') as string;
+    const rep = reqString(a, 2, 'replace', 'replacement') as string;
+    // flags 是可选形参：省略 / 显式 null 都按"无标志"
+    const flags = a.length > 3 ? (reqString(a, 3, 'replace', 'flags', true) ?? '') : '';
     return s.replace(compileRegex('replace', pattern, flags, true), translateReplacement(rep));
   },
   matches: (a) => {
     requireArity(a, 'matches', 2, 3);
-    const s = reqString(a, 0, 'matches', 'input');
-    const pattern = reqString(a, 1, 'matches', 'pattern');
-    if (s === null || pattern === null) return null;
-    const flags = a.length > 2 ? (reqString(a, 2, 'matches', 'flags') ?? '') : '';
+    const s = reqString(a, 0, 'matches', 'input') as string;
+    const pattern = reqString(a, 1, 'matches', 'pattern') as string;
+    // flags 是可选形参：省略 / 显式 null 都按"无标志"
+    const flags = a.length > 2 ? (reqString(a, 2, 'matches', 'flags', true) ?? '') : '';
     return compileRegex('matches', pattern, flags, false).test(s);
   },
   split: (a) => {
     requireArity(a, 'split', 2);
-    const s = reqString(a, 0, 'split', 'string');
-    const delim = reqString(a, 1, 'split', 'separator');
-    if (s === null || delim === null) return null;
+    const s = reqString(a, 0, 'split', 'string') as string;
+    const delim = reqString(a, 1, 'split', 'separator') as string;
     return s.split(compileRegex('split', delim, '', false));
   },
 

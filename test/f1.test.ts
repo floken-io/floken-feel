@@ -81,8 +81,24 @@ describe('floken-feel · F1 between', () => {
     expect(evaluate('"b" between "a" and "c"').value).toBe(true);
   });
 
-  it('不可比较 → null（未知）', () => {
-    expect(evaluate('null between 1 and 10').value).toBe(null);
+  /*
+   * ★ `null` 参与区间判定 → **抛**（TCK 0071#null_001~003 全是 errorResult）。
+   * 「比较得不出结果 → null」只适用于**类型对得上但值无法定序**的情形。
+   */
+  it('任一端是 null → 抛（TCK 0071 null_001~003）', () => {
+    for (const src of ['null between 1 and 10', '2 between null and 10', '2 between 1 and null']) {
+      let code = '';
+      try {
+        evaluate(src);
+      } catch (e: any) {
+        code = e?.code ?? '';
+      }
+      expect(code).toBe('FEEL_EVAL_ARG_TYPE');
+    }
+  });
+
+  it('类型对得上但无法定序 → null（未知）', () => {
+    expect(evaluate('"a" between 1 and 10').value).toBe(null);
   });
 
   it('unary test 里的 between', () => {

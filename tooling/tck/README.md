@@ -37,7 +37,8 @@ export TCK_DIR="$PWD/tck/TestCases"     # 或用 -- 默认回落到本机沙箱�
 ```bash
 pnpm build                       # 跑分器吃 dist/（发布产物形态，与 NFR 的"打包之后才存在"一致）
 pnpm tck:extract                 # 提取 → tmp/tck/{cases,labels,extract-gaps}.json
-pnpm tck                         # 跑分 → 分数 + tmp/tck/{results,failed}.json
+pnpm tck                         # 跑分 → 分数 + tmp/tck/{results,failed,loose}.json
+                                 #   loose.json = 严格口径缺口清单（通往 100% 的待办）
 pnpm tck:baseline                # 把当前成绩写成 baseline.labels.json（防退化基线）
 node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻取
 ```
@@ -68,31 +69,40 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
 | **R4** | 非 `FeelError` 异常 | 单记 `unexpected-error`：那是引擎崩溃，不是"规范判定为错误" |
 | **R5** | 时钟固定注入 | `clock = 2026-05-12T00:00:00Z`，保证可复现（NFR-F3） |
 
-## 五、当前成绩（2026-09-26 凌晨，F3 第五轮）
+## 五、当前成绩（2026-09-26，F3 第六轮）
 
 ```
-断言 2053   ⊘ IGNORED 54   → 计入 1999
-断言 1999   ✓ 1990 (99.5%)   ✗ 9
-├ 严格口径（官方 errorResult）: 1926/1999 (96.3%)
-└ 宽松口径（上游私有规则，仅对照）: 1990/1999 (99.5%)
+断言 2053   ⊘ IGNORED 55   → 计入 1998
+断言 1998   ✓ 1990 (99.6%)   ✗ 8
+├ 严格口径（官方 errorResult）: 1988/1998 (99.5%)
+└ 宽松口径（上游私有规则，仅对照）: 1990/1998 (99.6%)
 79 组中 73 组 100%
+严格口径缺口（errorResult=true 但我们返回 null）2 条 / 1 组
 ```
 
-失败归因（条数）：`mismatch` 9（4 组）。
+失败归因（条数）：`mismatch` 8（4 组）。
 
-**IGNORED 登记（NFR-F14，见 `tooling/tck/ignored.json`，理由逐条写死）**：
-- `0076-feel-external-java`（18）：`external {java: …}` 的 Java 绑定要 JVM + 宿主类路径；
-- `0082-feel-coercion`（36）：考的是 **DMN 声明类型层**的强制转换（decision/BKM 的 `typeRef`
-  含 `lambda_number_returns_number` 这类函数型，与结果值/实参值之间的校验与强转，
-  以及 decisionService 调用）。FEEL 表达式引擎没有"decision 的声明类型"这一层，职责在 `floken-dmn`。
+**★ 严格口径 vs 宽松口径的差额 = 待办清单**。跑分器会直接打出按组分布
+（`严格口径缺口…N 条 / M 组`），`--json` 另写 `tmp/tck/loose.json`。
+第六轮进场时这条差额是 **64 条 / 13 组**，收尾时是 **2 条 / 1 组** ——
+看总分（99.5% → 99.6%）几乎没动，看差额才知道补掉了整整 62 条。
 
-**剩余 9 条**：
+**IGNORED 登记（NFR-F14，见 `tooling/tck/ignored.json`，理由逐条写死）**
+- 整组（`labels`）：`0076-feel-external-java`（18，`external {java: …}` 要 JVM + 宿主类路径）；
+  `0082-feel-coercion`（36，考 **DMN 声明类型层**的强制转换 —— decision/BKM 的 `typeRef`
+  与结果值/实参值之间的校验与强转，以及 decisionService 调用，职责在 `floken-dmn`）。
+- 单条（`cases`，键是 `label#id`）：`0092#013`（decisionService 调用，与 0082 同族）。
+  ⚠️ 单条粒度只给「组内只有这一条越界」的情形 —— 为了一条就把整组免掉是把账做糊涂。
+
+**剩余 8 条 mismatch + 2 条严格缺口**：
 - 6 条 = **已知 gap**，9 位年份（`1115#015/#016/#029/#030`、`1117#027/#028`）超出
   `temporal-polyfill` 可表示范围（±275760），记 `known-gaps`：给 `null`，不抛错；
-- `0092#009`（`{a: 10, "": expr}` 的"结果条目"约定，`0057#007` 的 `{"": "foo"}` 却期望原上下文 —— 官方自相矛盾）、
-  `0092#013`（decisionService 调用，属 DMN 层）；
+- `0092#009`（`{a: 10, "": expr}` 的"结果条目"约定，`0057#007` 的 `{"": "foo"}` 却期望原上下文 —— 官方自相矛盾）；
 - `1111#K2-MatchesFunc-1`（`matches("hello world","hello\ sworld","x")` 期望 true —— 按 XPath，
-  x 模式下 `\ ` 是**字面空格**，应为 false；此处 TCK 与规范冲突，我们**从规范**）。
+  x 模式下 `\ ` 是**字面空格**，应为 false；此处 TCK 与规范冲突，我们**从规范**）；
+- `0057#009 {a:1}.b`、`#010 null.b`（2 条严格缺口）：用例 **description 自己写着
+  "results in null"** 却标了 `errorResult="true"`，DMN 1.4 §10.3.1 也说键不存在是 null
+  → 与 K2-1 同一处置原则，**从规范**，保持 null。
 
 **已修（按轮次；轮次口径与 `项目实施记录/2026-09-25.md` 一致）**：
 - 首轮：temporal 档 import 即注册（+176）、指数记法 `1.23e4`（+139）、
@@ -139,10 +149,25 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
      以及把含空格的模型名登记进 `registerSpacedName`（`days in weekend`，TCK 0084#014）。
   ④ 数值判等补**期望字面精度下限**（`exp(-1)` 官方只写 8 位小数，不是引擎算错）。
   ⑤ **IGNORED 机制落地**：`tooling/tck/ignored.json` 登记整组 IGNORED，理由写死在文件里。
+- **第六轮（严格参数校验 —— 该抛错而不是返回 null，严格口径 1926 → 1988）**：
+  起点是跑分器自己的盲区：宽松 1990 / 严格 1926，中间 64 条全是 `errorResult="true"`
+  而我们**返回了 null** —— 被宽松口径盖住，看总分看不出来。故先给跑分器加了
+  「严格口径缺口」按组分布的输出（+ `--json` 写 `tmp/tck/loose.json`），再逐组清：
+  ① `duration()` / `years and months duration()`（1120/1121，22 条）：null / 错类型 /
+     `arity 0` / 非法 ISO 字面量 → 抛。⚠️ 只在**具名构造器**这条路上抛，`@"P1Y"` 仍给 null。
+  ② `**` 只认 number（0075#002~#011，10 条）：判据用**原始值类型**（`num()` 会放宽布尔），
+     且必须排在 `l === null || r === null` **之前**，否则类型不符时先被那段"诊断 + null"吃掉。
+  ③ 调用非函数值 → 抛（1131，8 条）：新错误码 `FEEL_EVAL_NOT_CALLABLE`。
+     ⚠️ 裸变量**取值**仍是降级（诊断 + null），只有"调用"才是抛。
+  ④ `get value` / `not` / `split` / `matches` / `contains`（0080/0066/0067/1111/1110，17 条）：
+     形参有类型，`null` 不符 → 抛。`reqString` 的 `null` 默认抛，只有**可选形参 `flags`** 留 `nullOk`。
+  ⑤ `between` / `in <区间>` 的 null 参与、写错的 `@"…"` 字面量（0071/0072/0093，5 条）。
+  ⑥ `ignored.json` 新增 `cases`（单条 `label#id`）粒度，安置 `0092#013` 的 decisionService。
 
 **已知 gap（6 条，不打算修）**：`1115#015/#016/#029/#030`、`1117#027/#028` 用 9 位年份
 （`999999999`）—— 写法合法但超出 `temporal-polyfill` 可表示范围（±275760），记 `known-gaps`：
-给 `null`，不抛错。
+给 `null`，不抛错。另有 4 条 **TCK 自身矛盾**（`1111#K2-1`、`0092#009`、`0057#009/#010`）
+→ 从规范，不强行适配。
 
 **已知最大缺口（下一轮按此顺序）**：见 `05-包需求-floken-feel.md` §7.4 的清单。
 

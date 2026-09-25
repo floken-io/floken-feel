@@ -1046,13 +1046,26 @@ function construct(kind: 'date' | 'time' | 'dateTime'): NativeFn {
   };
 }
 
-/** `duration(from)`：文本 → 时长值（非串给 `null`，与三值语义一致） */
+/**
+ * `duration(from)`：文本 → 时长值。
+ *
+ * ★ 失败一律**抛**（不是给 null）—— TCK 1120 把每一种坏输入都列成了 `errorResult`：
+ * `#001 duration(null)`、`#002 duration()`（arity）、`#042 duration(2017)`、`#044 duration([])`
+ * （类型不符）、`#041 ""`、`#045 "P"`、`#046 "P0"`、`#047 "1Y"`、`#048 "1D"`、`#049 "P1H"`、
+ * `#050 "P1S"`、`#043 "2012T-12-2511:00:00Z"`（不是合法 ISO 8601 时长字面量）。
+ *
+ * ⚠️ 只在**具名构造器**这条路上抛：`@"P1Y"` 字面量与隐式转换仍走 `durationFromText`
+ * （`parseText(…, null)` → null），那是"这段文本不是该类型的字面量"，不是类型错误。
+ */
 function durationFn(): NativeFn {
+  const fnName = 'duration';
   return (args) => {
+    requireArity(args, fnName, 1);
     if (!getTemporal()) return null;
-    const s = toStr(args[0] ?? null);
-    if (s === null) return null;
-    return durationFromText(s);
+    const v = args[0] ?? null;
+    if (v === null) throw argTypeError(fnName, 'from', 'string', 'null');
+    if (typeof v !== 'string') throw argTypeError(fnName, 'from', 'string', feelTypeName(v));
+    return parseText('duration', v, fnName);
   };
 }
 
@@ -1061,19 +1074,23 @@ function durationFn(): NativeFn {
  *
  * 分派顺序有意如此：`^-?P` 是 duration 专有前缀；`HH:MM` 开头的只可能是 time
  * （否则 `11:22:33` 会被误判成含 `:` 的 date-time）；纯 `YYYY-MM-DD` 是 date；
- * 余下含 `T` 的才是 date-time。**失败一律给 `null`** —— 这不是"类型错误"，
- * 只是"这段文本不是该类型的字面量"（见 `shapeFail`）。
+ * 余下含 `T` 的才是 date-time。
+ *
+ * ★ 失败一律**抛**（`fnName = '@'`），不是给 null：TCK 0093#test_001 的 `@"foo"`
+ * 是 `errorResult`。`@"…"` 是**字面量语法**，写了一个不合规的字面量就是表达式错，
+ * 与"运行时值未知"无关 —— 三值语义不覆盖这种情况。
  */
 function atLiteralFn(): NativeFn {
+  const fnName = '@';
   return (args) => {
     const T = getTemporal();
     const s = toStr(args[0] ?? null);
     if (!T || s === null) return null;
     const text = s.trim();
-    if (/^-?P/i.test(text)) return durationFromText(text);
-    if (/^\d\d:\d\d/.test(text)) return temporalFromText('time', text);
-    if (/^-?\d{4,}-\d\d-\d\d$/.test(text)) return temporalFromText('date', text);
-    return temporalFromText('dateTime', text);
+    if (/^-?P/i.test(text)) return parseText('duration', text, fnName);
+    if (/^\d\d:\d\d/.test(text)) return parseText('time', text, fnName);
+    if (/^-?\d{4,}-\d\d-\d\d$/.test(text)) return parseText('date', text, fnName);
+    return parseText('dateTime', text, fnName);
   };
 }
 
@@ -1160,11 +1177,22 @@ function toDateLike(v: Value): any | null {
  * （`P20M2D`），而 FEEL 这个函数按定义**只给年月**（`P1Y8M`）。
  */
 function yearsAndMonthsDuration(args: Value[]): Value {
+  const fnName = 'years and months duration';
+  /*
+   * ★ 参数校验**抛**而不是返回 null（TCK 1121#001~#007 / #028~#030 全是 errorResult）：
+   * `#001 (null)` `#002 (null,null)` `#003 (date,null)` `#004 (dateTime,null)` `#005 (null,date)`
+   * `#006 (null,dateTime)` `#007 ()`（arity）`#028 (2017)` `#029 ("2012T-…")` `#030 ([],[])`。
+   * 单参 `#001` 由 arity 拦下 —— 该函数按 DMN 1.4 只接受 `from, to` 两参。
+   */
+  requireArity(args, fnName, 2);
   const T = getTemporal();
   if (!T) return null;
-  const a = toDateLike(args[0] ?? null);
-  const b = toDateLike(args[1] ?? null);
-  if (!a || !b) return null;
+  const from = args[0] ?? null;
+  const to = args[1] ?? null;
+  const a = toDateLike(from);
+  if (!a) throw argTypeError(fnName, 'from', 'date or date and time', feelTypeName(from));
+  const b = toDateLike(to);
+  if (!b) throw argTypeError(fnName, 'to', 'date or date and time', feelTypeName(to));
   try {
     const base = (b.year - a.year) * 12 + (b.month - a.month);
     const daysInMonth = a.daysInMonth ?? 30;

@@ -19,6 +19,7 @@ import {
   functionNotAllowed,
   limitExceeded,
   namedArgError,
+  notCallableError,
   operandTypeError,
   optionError,
   temporalNotLoaded,
@@ -573,6 +574,14 @@ export function evaluateNode(
         );
       }
       const domain = evaluateNode(node.domain, ctx, warnings, builtins, runtime);
+      /*
+       * ★ 被测试值是 `null` 且域是**区间** → 抛（TCK 0072#null_001 `null in [1..10]`）。
+       * 与 `between` 同口径（0071#null_001~003）：null 参与区间判定在 FEEL 里没有定义。
+       * 只管区间域 —— 列表域的 `null in [null]` 仍是普通的相等判定（值为 true）。
+       */
+      if (v === null && isRange(domain)) {
+        throw operandTypeError('in', 'null', feelTypeName(domain));
+      }
       // 区间：前缀写法（`(< 5)` / `(!=5)`）按运算符判，显式写法按端点包含判
       if (isRange(domain)) return rangeMatch(domain, v);
       if (isList(domain)) {
@@ -603,6 +612,16 @@ export function evaluateNode(
       const v = evaluateNode(node.value, ctx, warnings, builtins, runtime);
       const lo = evaluateNode(node.low, ctx, warnings, builtins, runtime);
       const hi = evaluateNode(node.high, ctx, warnings, builtins, runtime);
+      /*
+       * ★ 任一端是 `null` → **抛**（TCK 0071#null_001 `null between 1 and 10`、
+       * #null_002 `2 between null and 10`、#null_003 `2 between 1 and null` 全是 errorResult）。
+       *
+       * 「比较得不出结果 → null」只适用于**类型对得上但值无法定序**的情形；
+       * null 参与区间判定在 FEEL 里没有定义，官方按错误判。
+       */
+      if (v === null || lo === null || hi === null) {
+        throw operandTypeError('between', feelTypeName(v), feelTypeName(lo));
+      }
       const c1 = compareValues(v, lo);
       const c2 = compareValues(v, hi);
       if (c1 === null || c2 === null) return null; // 任一端不可比较 → 未知
@@ -670,6 +689,8 @@ export function evaluateNode(
     case 'call': {
       let fn: NativeFn | null = null;
       let fnName: string | null = null;
+      /** 被调者的实际类型（用于「不可调用」报错） */
+      let calleeType = 'null';
 
       if (node.callee.type === 'name') {
         const name = node.callee.name;
@@ -679,6 +700,7 @@ export function evaluateNode(
           fnName = name;
         } else {
           const v = ctx.get(name) ?? null;
+          calleeType = feelTypeName(v);
           if (isFunction(v)) {
             fn = v.call;
             fnName = v.name || name;
@@ -690,6 +712,7 @@ export function evaluateNode(
       } else if (node.callee.type === 'path') {
         const base = evaluateNode(node.callee.base, ctx, warnings, builtins, runtime);
         const v = isContext(base) ? (base.get(node.callee.name) ?? null) : null;
+        calleeType = feelTypeName(v);
         if (isFunction(v)) {
           fn = v.call;
           fnName = v.name || node.callee.name;
@@ -697,6 +720,7 @@ export function evaluateNode(
       } else {
         // 任意表达式作被调者：`(function(a, b) a + b)(1, 2)`、`f().g` 等
         const v = evaluateNode(node.callee, ctx, warnings, builtins, runtime);
+        calleeType = feelTypeName(v);
         if (isFunction(v)) {
           fn = v.call;
           fnName = v.name || null;
@@ -710,10 +734,19 @@ export function evaluateNode(
       const argNodes = reordered ? reordered.nodes : node.args;
       const args = argNodes.map((a) => evaluateNode(a, ctx, warnings, builtins, runtime));
 
+      /*
+       * ★ 被调者不是函数 → **抛**（TCK 1131 的 8 条全是 `errorResult`）：
+       * `non_existing_function()`（名字未绑定）、`null()`、`"some_func"()`、`"abs"(-1)`、
+       * `@"2023-11-11"()`、`123()`、`true()`、`false()`。
+       *
+       * 「调用失败给 null」是把**类型错误**当成**未知值**——FEEL 没有这条规则。
+       * 三值语义只管"值存在但未知"，不管"这个东西根本不能调用"。
+       */
       if (!fn) {
-        const label = node.callee.type === 'name' ? node.callee.name : 'expression';
-        diag(warnings, FEEL_DIAGNOSTIC_CODES.EVAL_NO_FUNCTION, `Function '${label}' not found`, node);
-        return null;
+        throw notCallableError(
+          node.callee.type === 'name' ? node.callee.name : null,
+          calleeType,
+        );
       }
 
       // S-FEEL 白名单：具名函数越界 → 抛（匿名函数字面量不在此列，由引擎侧语法校验拦）
@@ -753,6 +786,21 @@ export function evaluateNode(
       }
       const l = num(lv, runtime);
       const r = num(rv, runtime);
+      /*
+       * ★ 幂只对 `number` 有定义 —— 其余类型**抛**（TCK 0075#002~#011 全是 errorResult：
+       * `"foo" ** 4`、`true ** 4`、`date("2018-12-10") ** 4`、`time(...) ** 4`、
+       * `date and time(...) ** 4`、`duration("P2Y") ** 4`、`duration("P2D") ** 4`、
+       * `{a: 2} ** 4`、`[2] ** 4`、`(function() "foo") ** 4`）。
+       *
+       * ⚠️ 必须排在下面的 `l === null || r === null`（诊断 + null）**之前**：
+       * 类型不符时 `num()` 先给了 null，落进那段就再也到不了 `case '**'`。
+       * 判据用**原始值的类型**而不是 `num()` 的结果：`num()` 是给 `+ - * /` 做宽松转换的
+       * （布尔/数字字符串会被放宽），而幂不允许这种放宽。
+       * 其余算术运算符保持"类型不符 → 诊断 + null"（TCK 对它们是另一套口径）。
+       */
+      if (node.op === '**' && (typeof lv !== 'number' || typeof rv !== 'number')) {
+        throw operandTypeError('**', feelTypeName(lv), feelTypeName(rv));
+      }
       if (l === null || r === null) {
         diag(
           warnings,

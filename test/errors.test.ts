@@ -114,16 +114,27 @@ describe('floken-feel · 两条通道不许混（AGENTS.md §5.1）', () => {
     expect(err.position).toBeDefined();
   });
 
-  it('求值降级（变量/函数）→ 不抛，走 warnings', () => {
-    for (const src of ['nope', 'nope(1)']) {
-      const r = evaluate(src);
-      expect(r.value).toBe(null);
-      expect(r.warnings.length).toBeGreaterThan(0);
-      expect(r.warnings[0]?.code).toMatch(/^FEEL_EVAL_/);
-      expect(r.warnings[0]?.severity).toBe('warn');
-      expect(typeof r.warnings[0]?.start).toBe('number');
-      expect(typeof r.warnings[0]?.end).toBe('number');
+  it('求值降级（变量）→ 不抛，走 warnings', () => {
+    const r = evaluate('nope');
+    expect(r.value).toBe(null);
+    expect(r.warnings.length).toBeGreaterThan(0);
+    expect(r.warnings[0]?.code).toBe('FEEL_EVAL_NO_VARIABLE');
+    expect(r.warnings[0]?.severity).toBe('warn');
+    expect(typeof r.warnings[0]?.start).toBe('number');
+    expect(typeof r.warnings[0]?.end).toBe('number');
+    /*
+     * ⚠️ `nope(1)` **不在此列**：裸变量是"取值"（换上下文绑上值就救回了 → 诊断），
+     * 而**调用**是强语义 —— 被调者不是函数就是类型错误（TCK 1131 的 8 条全是
+     * errorResult）。故 `nope`（诊断）与 `nope(1)`（抛）走两条通道，这不是自相矛盾：
+     * 一个是"名字没绑值"，一个是"把非函数当函数调用"。
+     */
+    let code = '';
+    try {
+      evaluate('nope(1)');
+    } catch (e: any) {
+      code = e?.code ?? '';
     }
+    expect(code).toBe('FEEL_EVAL_NOT_CALLABLE');
     // 注意：`1[1]` **不在此列** —— 非列表基底的下标按 FEEL 10.3.1.8 当单元素列表处理，
     // `1[1]` = 1 是**正常求值**（TCK 0068，2026-09-25 修），不是降级。
     expect(evaluate('1[1]').value).toBe(1);

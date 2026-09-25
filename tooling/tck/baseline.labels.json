@@ -2,7 +2,7 @@
   "note": "B 口径**防退化基线**：每个 FEEL label 的 pass 数快照。重跑后任一 label 低于此处即判「标签退化」。本包从一开始就是自研 parser（零 lezer-feel 依赖），故不存在\"换 parser 前后对比\"的上游参照物 —— 判据① 的原始意图（分数不是 fork 来的）在前提上自动成立，本文件改任**回归护栏**。",
   "source": "DMN TCK — github.com/dmn-tck/tck（CC BY-SA，语料不随包分发）",
   "clock": "2026-05-12T00:00:00.000Z",
-  "assertions": 1999,
+  "assertions": 1998,
   "pass": 1990,
   "labels": {
     "0050-feel-abs-function": {
@@ -143,7 +143,7 @@
     },
     "0092-feel-lambda": {
       "pass": 16,
-      "total": 18
+      "total": 17
     },
     "0093-feel-at-literals": {
       "pass": 19,
