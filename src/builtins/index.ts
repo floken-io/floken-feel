@@ -14,4 +14,19 @@ export { LIST_BUILTINS } from './list.js';
 export { CONTEXT_BUILTINS } from './context.js';
 export { FUNCTION_BUILTINS } from './function.js';
 
-export { asList, numericList, roundTo, spread, EMPTY_CONTEXT } from './helpers.js';
+export {
+  asList,
+  ceilingScaled,
+  EMPTY_CONTEXT,
+  floorScaled,
+  numericList,
+  optNumber,
+  optScale,
+  reqNumber,
+  requireArity,
+  roundScaled,
+  SCALE_MAX,
+  SCALE_MIN,
+  spread,
+  type RoundMode,
+} from './helpers.js';

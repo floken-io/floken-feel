@@ -3,34 +3,34 @@
   "source": "DMN TCK — github.com/dmn-tck/tck（CC BY-SA，语料不随包分发）",
   "clock": "2026-05-12T00:00:00.000Z",
   "assertions": 2053,
-  "pass": 1220,
+  "pass": 1532,
   "labels": {
     "0050-feel-abs-function": {
-      "pass": 10,
+      "pass": 17,
       "total": 17
     },
     "0051-feel-sqrt-function": {
-      "pass": 12,
+      "pass": 15,
       "total": 15
     },
     "0052-feel-exp-function": {
-      "pass": 11,
+      "pass": 14,
       "total": 15
     },
     "0053-feel-log-function": {
-      "pass": 12,
+      "pass": 15,
       "total": 15
     },
     "0054-feel-even-function": {
-      "pass": 14,
+      "pass": 17,
       "total": 17
     },
     "0055-feel-odd-function": {
-      "pass": 14,
+      "pass": 17,
       "total": 17
     },
     "0056-feel-modulo-function": {
-      "pass": 19,
+      "pass": 28,
       "total": 28
     },
     "0057-feel-context": {
@@ -42,23 +42,23 @@
       "total": 21
     },
     "0059-feel-all-function": {
-      "pass": 15,
+      "pass": 18,
       "total": 19
     },
     "0060-feel-any-function": {
-      "pass": 13,
+      "pass": 16,
       "total": 17
     },
     "0061-feel-median-function": {
-      "pass": 12,
+      "pass": 13,
       "total": 14
     },
     "0062-feel-mode-function": {
-      "pass": 7,
+      "pass": 8,
       "total": 13
     },
     "0063-feel-stddev-function": {
-      "pass": 10,
+      "pass": 11,
       "total": 12
     },
     "0064-feel-conjunction": {
@@ -74,11 +74,11 @@
       "total": 6
     },
     "0067-feel-split-function": {
-      "pass": 7,
+      "pass": 8,
       "total": 9
     },
     "0068-feel-equality": {
-      "pass": 75,
+      "pass": 76,
       "total": 114
     },
     "0069-feel-list": {
@@ -86,7 +86,7 @@
       "total": 35
     },
     "0070-feel-instance-of": {
-      "pass": 77,
+      "pass": 142,
       "total": 142
     },
     "0071-feel-between": {
@@ -94,7 +94,7 @@
       "total": 38
     },
     "0072-feel-in": {
-      "pass": 209,
+      "pass": 250,
       "total": 327
     },
     "0073-feel-comments": {
@@ -102,7 +102,7 @@
       "total": 3
     },
     "0074-feel-properties": {
-      "pass": 11,
+      "pass": 53,
       "total": 53
     },
     "0075-feel-exponent": {
@@ -122,11 +122,11 @@
       "total": 2
     },
     "0079-feel-string-function": {
-      "pass": 6,
+      "pass": 7,
       "total": 37
     },
     "0080-feel-getvalue-function": {
-      "pass": 12,
+      "pass": 13,
       "total": 14
     },
     "0081-feel-getentries-function": {
@@ -134,7 +134,7 @@
       "total": 9
     },
     "0082-feel-coercion": {
-      "pass": 16,
+      "pass": 18,
       "total": 36
     },
     "0083-feel-unicode": {
@@ -154,11 +154,11 @@
       "total": 18
     },
     "0093-feel-at-literals": {
-      "pass": 15,
+      "pass": 16,
       "total": 19
     },
     "0094-feel-product-function": {
-      "pass": 10,
+      "pass": 11,
       "total": 13
     },
     "0095-feel-day-of-year-function": {
@@ -190,7 +190,7 @@
       "total": 4
     },
     "0103-feel-is-function": {
-      "pass": 1,
+      "pass": 47,
       "total": 50
     },
     "0105-feel-math": {
@@ -206,47 +206,47 @@
       "total": 3
     },
     "1100-feel-decimal-function": {
-      "pass": 7,
+      "pass": 8,
       "total": 10
     },
     "1101-feel-floor-function": {
-      "pass": 11,
+      "pass": 17,
       "total": 17
     },
     "1102-feel-ceiling-function": {
-      "pass": 11,
+      "pass": 17,
       "total": 17
     },
     "1103-feel-substring-function": {
-      "pass": 10,
+      "pass": 11,
       "total": 11
     },
     "1104-feel-string-length-function": {
-      "pass": 3,
+      "pass": 6,
       "total": 6
     },
     "1105-feel-upper-case-function": {
-      "pass": 5,
+      "pass": 8,
       "total": 8
     },
     "1106-feel-lower-case-function": {
-      "pass": 6,
+      "pass": 9,
       "total": 9
     },
     "1107-feel-substring-before-function": {
-      "pass": 7,
+      "pass": 9,
       "total": 9
     },
     "1108-feel-substring-after-function": {
-      "pass": 8,
+      "pass": 10,
       "total": 10
     },
     "1109-feel-replace-function": {
-      "pass": 12,
+      "pass": 13,
       "total": 28
     },
     "1110-feel-contains-function": {
-      "pass": 8,
+      "pass": 10,
       "total": 10
     },
     "1111-feel-matches-function": {
@@ -254,11 +254,11 @@
       "total": 40
     },
     "1115-feel-date-function": {
-      "pass": 35,
+      "pass": 36,
       "total": 52
     },
     "1116-feel-time-function": {
-      "pass": 45,
+      "pass": 46,
       "total": 83
     },
     "1117-feel-date-and-time-function": {
@@ -266,7 +266,7 @@
       "total": 88
     },
     "1120-feel-duration-function": {
-      "pass": 31,
+      "pass": 32,
       "total": 50
     },
     "1121-feel-years-and-months-duration-function": {
@@ -282,35 +282,35 @@
       "total": 8
     },
     "1140-feel-string-join-function": {
-      "pass": 16,
+      "pass": 19,
       "total": 22
     },
     "1141-feel-round-up-function": {
-      "pass": 10,
+      "pass": 16,
       "total": 16
     },
     "1142-feel-round-down-function": {
-      "pass": 10,
+      "pass": 16,
       "total": 16
     },
     "1143-feel-round-half-up-function": {
-      "pass": 7,
+      "pass": 16,
       "total": 16
     },
     "1144-feel-round-half-down-function": {
-      "pass": 7,
+      "pass": 16,
       "total": 16
     },
     "1145-feel-context-function": {
-      "pass": 11,
+      "pass": 13,
       "total": 18
     },
     "1146-feel-context-put-function": {
-      "pass": 15,
+      "pass": 16,
       "total": 30
     },
     "1147-feel-context-merge-function": {
-      "pass": 9,
+      "pass": 10,
       "total": 14
     },
     "1148-feel-now-function": {

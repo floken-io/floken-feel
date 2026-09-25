@@ -48,6 +48,23 @@ export interface FeelTemporal {
   readonly iso: string;
   /** 底层 Temporal.* 对象（核心永不解构它） */
   readonly raw: unknown;
+  /**
+   * 构造时的**原始输入串**（可选）。只有 `./temporal` 档会读它：
+   * `Temporal.PlainTime` / `PlainDateTime` 会**丢弃** UTC offset 与时区，
+   * 而 FEEL 的 `.time offset` / `.timezone` 属性必须能读回来。
+   * 核心只透传、不解析（NFR-F11），故对比较与相等判定无影响。
+   */
+  readonly src?: string;
+  /**
+   * **相等判定键**（可选，由 `./temporal` 档生成）。
+   *
+   * 为什么不直接比较 `iso`：DMN 的 `is()` 对时间有更细的口径（TCK 0103）——
+   * `23:00:50Z` 与 `23:00:50+00:00` 相等（同一零偏移的两种写法），
+   * 但 `23:00:50` 与 `23:00:50Z` **不等**（一个无偏移）；`P1D` 与 `PT24H` 相等……
+   * 这些都无法用"可直接排序的 `iso`"表达，故另开一键。
+   * 两侧都有 `eqKey` 时以它为准，否则退回 `kind + iso`。
+   */
+  readonly eqKey?: string;
 }
 
 /** FEEL context：键值集合，键可含空格（如 "Mike's daughter"）。 */
@@ -176,6 +193,20 @@ export function makeFunction(
 export type CompareOp = '=' | '!=' | '<' | '<=' | '>' | '>=';
 export type ArithOp = '+' | '-' | '*' | '/' | '**';
 
+/**
+ * `instance of` 右侧的**类型规格**（DMN 1.4 §10.3.5）。
+ *
+ * 与「一个字符串」的区别在于泛型：`list<Any>` / `context<a: string>` 必须能被
+ * **结构化**判定，否则 `[1,"2"] instance of list<number>` 就无从下手。
+ * 类型名大小写不敏感（TCK 写 `Any`，规范本文写 `any`）。
+ */
+export type TypeSpec =
+  | { kind: 'named'; name: string; start: number; end: number }
+  | { kind: 'list'; item: TypeSpec; start: number; end: number }
+  | { kind: 'context'; entries: { key: string; type: TypeSpec }[]; start: number; end: number }
+  | { kind: 'range'; item: TypeSpec; start: number; end: number }
+  | { kind: 'function'; result: TypeSpec | null; start: number; end: number };
+
 export type Node =
   | { type: 'lit'; value: Value; start: number; end: number }
   /**
@@ -192,10 +223,16 @@ export type Node =
    * 运行时才能定夺，故共用本节点。
    */
   | { type: 'filter'; base: Node; condition: Node; start: number; end: number }
-  /** `value in domain`：domain 为区间 → 包含判定；为列表 → 成员判定 */
+  /** `value in domain`：domain 为区间 → 包含判定；为列表 → 成员判定；为 `tests` → unary tests（OR） */
   | { type: 'in'; value: Node; domain: Node; start: number; end: number }
-  /** `value instance of <类型名>`：类型名为 FEEL 类型（含多词 `date and time`） */
-  | { type: 'instance'; value: Node; typeName: string; start: number; end: number }
+  /**
+   * unary tests 列表（FEEL 10.3.2.4）：`(` 内逗号分隔的若干测试项，**项间为 OR**。
+   * 出现在 `in` 右侧（`10 in (1, < 5, >=10)`）；每项用 `?` 指代被测试值，
+   * 由 `in` 求值时把 `?` 绑定到左侧的值上（见 evaluator 的 `evalUnaryTerm`）。
+   */
+  | { type: 'tests'; tests: Node[]; start: number; end: number }
+  /** `value instance of <类型规格>`：规格可含泛型（`list<Any>` / `context<a: string>`） */
+  | { type: 'instance'; value: Node; typeSpec: TypeSpec; start: number; end: number }
   /** `value between low and high`（等价 `value >= low and value <= high`） */
   | { type: 'between'; value: Node; low: Node; high: Node; start: number; end: number }
   /** 函数字面量 `function(a, b) body`，闭包捕获定义处上下文 */
@@ -211,7 +248,19 @@ export type Node =
       end: number;
     }
   | { type: 'context'; entries: { key: string; value: Node }[]; start: number; end: number }
-  | { type: 'call'; callee: Node; args: Node[]; start: number; end: number }
+  /**
+   * 函数调用。`argNames` 与 `args` 等长，元素为 `null` 表示该实参是**位置**参数；
+   * 只要有一个非 null，整次调用就按**命名参数**处理（DMN 1.4 §10.3.2 不允许混用）。
+   * 无命名参数时该字段整体缺省，保持既有 AST 形状不变。
+   */
+  | {
+      type: 'call';
+      callee: Node;
+      args: Node[];
+      argNames?: readonly (string | null)[];
+      start: number;
+      end: number;
+    }
   | { type: 'unary'; op: '-'; operand: Node; start: number; end: number }
   | { type: 'binary'; op: ArithOp; left: Node; right: Node; start: number; end: number }
   | { type: 'compare'; op: CompareOp; left: Node; right: Node; start: number; end: number }

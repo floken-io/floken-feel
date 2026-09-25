@@ -10,6 +10,7 @@
 
 import type { NativeFn } from '../core/types.js';
 import { registerSpacedName, SPACED_NAMES } from '../core/spaced-names.js';
+import { paramNamesOf, registerParams } from '../core/function-params.js';
 import { BOOLEAN_BUILTINS } from './boolean.js';
 import { CONTEXT_BUILTINS } from './context.js';
 import { CONVERSION_BUILTINS } from './conversion.js';
@@ -66,7 +67,12 @@ export const BUILTINS: Record<string, NativeFn> = (() => {
   for (const [name] of Object.entries(out)) registerSpacedName(name);
   for (const [alias, canonical] of Object.entries(ALIASES)) {
     const fn = out[canonical];
-    if (fn) out[alias] = fn;
+    if (fn) {
+      out[alias] = fn;
+      // 别名与规范名**共用同一张形参名表**（`stringLength` ← `string length`）
+      const params = paramNamesOf(canonical);
+      if (params) registerParams(alias, params);
+    }
   }
   return out;
 })();

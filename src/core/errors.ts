@@ -73,6 +73,17 @@ export const FEEL_ERROR_CODES = {
   LIMIT_TIMEOUT: 'FEEL_LIMIT_TIMEOUT',
   // S-FEEL 子集越界（03-engine §7.2：越界必须报错，不能静默求值）
   NOT_ALLOWED_FUNCTION: 'FEEL_NOT_ALLOWED_FUNCTION',
+  /*
+   * 求值期**类型错误**（不是"降级可继续"的诊断，故与 EVAL_* 诊断码分属两个命名空间）。
+   * 判据：换输入也救不回、且结果语义被破坏 → 抛。
+   */
+  EVAL_DURATION_COMPONENT: 'FEEL_EVAL_DURATION_COMPONENT',
+  EVAL_UNSUPPORTED_PROPERTY: 'FEEL_EVAL_UNSUPPORTED_PROPERTY',
+  EVAL_NAMED_ARG: 'FEEL_EVAL_NAMED_ARG',
+  EVAL_ARG_COUNT: 'FEEL_EVAL_ARG_COUNT',
+  EVAL_ARG_TYPE: 'FEEL_EVAL_ARG_TYPE',
+  EVAL_ARG_RANGE: 'FEEL_EVAL_ARG_RANGE',
+  EVAL_UNDEFINED: 'FEEL_EVAL_UNDEFINED',
 } as const;
 
 /** 诊断码表（不抛，随结果返回） */
@@ -148,6 +159,19 @@ export class FeelLimitError extends FeelError {}
 /** 调用了白名单外的函数（S-FEEL 子集越界，见 03-engine §7.2） */
 export class FeelNotAllowedError extends FeelError {}
 
+/**
+ * 求值期类型错误：值存在、类型也对，但**不支持该操作**。
+ * 与 `EVAL_TYPE_MISMATCH` 诊断的区别是判据（AGENTS.md §5）：换输入也救不回 → 抛。
+ * 例：years-and-months duration 上取 `.days`（该分量按规范不存在）。
+ */
+export class FeelTypeError extends FeelError {}
+
+/**
+ * 调用签名错误（命名参数用错、位置与命名混用、给不支持命名参数的值传命名参数）。
+ * DMN 1.4 §10.3.2 规定命名参数名必须与规范**逐字**相同，写错就是错误而非"按位置硬套"。
+ */
+export class FeelCallError extends FeelError {}
+
 // ---------------- 工厂 ----------------
 
 /** 语法错误工厂（parser / lexer 统一走这里，保证码与定位口径一致） */
@@ -186,6 +210,136 @@ export function temporalNotLoaded(fnName: string): FeelNotLoadedError {
     code: FEEL_ERROR_CODES.NOT_LOADED_TEMPORAL,
     hint: 'await import("floken-feel/temporal") 后重试，或改用 evaluateTemporal()',
     details: { function: fnName, module: 'floken-feel/temporal' },
+  });
+}
+
+/**
+ * 时间/时长值上取**不存在**的分量（必须抛，不能降级为 null）。
+ *
+ * FEEL 把 duration 分成两类（DMN 1.4 §10.3.4.4）：`years and months duration`
+ * 只有 `.years` / `.months`；`days and time duration` 只有 `.days` / `.hours` /
+ * `.minutes` / `.seconds`。跨类访问按规范就是**错误**（TCK 0074 的 errorResult 用例即此）。
+ */
+/**
+ * 命名参数调用不合法（DMN 1.4 §10.3.2）。
+ * `kind`：
+ * - `unknown` —— 形参名与规范不符（`abs(number: -1)`）
+ * - `unsupported` —— 该函数没有登记形参名，无法对位
+ * - `mixed` —— 位置参数与命名参数混用
+ * - `duplicate` —— 同一形参给了两次
+ */
+export function namedArgError(
+  kind: 'unknown' | 'unsupported' | 'mixed' | 'duplicate',
+  fnName: string,
+  detail: { name?: string; allowed?: readonly string[] } = {},
+): FeelCallError {
+  const message = {
+    unknown: `Unknown parameter '${detail.name}' for function '${fnName}'`,
+    unsupported: `Function '${fnName}' does not accept named parameters`,
+    mixed: `Cannot mix positional and named parameters in '${fnName}'`,
+    duplicate: `Duplicate parameter '${detail.name}' in '${fnName}'`,
+  } as const;
+  const init: FeelErrorInit = {
+    code: FEEL_ERROR_CODES.EVAL_NAMED_ARG,
+    details: { function: fnName, ...detail },
+  };
+  if (detail.allowed?.length) init.hint = `可用形参：${detail.allowed.join(', ')}`;
+  return new FeelCallError(message[kind], init);
+}
+
+/**
+ * 实参个数不匹配。
+ *
+ * 注意这与「参数不可用就返回 `null`」的既有约定不冲突：DMN 内置函数**少给或多给参数**
+ * 是调用签名错误（没有可返回的值），而"给了 null / 类型不符"才是三值语义的事。
+ * TCK 用 `errorResult="true"` 把这两类分开测（`abs()` → Err、`abs(null)` → Err）。
+ *
+ * `expected` 可给区间（如 floor 的 `[1, 2]`：`n` 必需、`scale` 选填），
+ * 消息随之写成 `1 to 2 argument(s)`。
+ */
+export function argCountError(
+  fnName: string,
+  expected: number | readonly [number, number],
+  actual: number,
+): FeelCallError {
+  const wants = typeof expected === 'number' ? `${expected}` : `${expected[0]} to ${expected[1]}`;
+  return new FeelCallError(`Function '${fnName}' expects ${wants} argument(s) but got ${actual}`, {
+    code: FEEL_ERROR_CODES.EVAL_ARG_COUNT,
+    details: { function: fnName, expected: [...(typeof expected === 'number' ? [expected] : expected)], actual },
+  });
+}
+
+/**
+ * 实参**类型不符**（含传了 `null`）。
+ *
+ * ⚠️ 这是对"参数不可用就返回 null"那条顺口溜的**修正**：DMN 1.4 §10.3.4 的内置函数
+ * 形参都是有类型的（`floor(n: number, scale: number)`），`null` / 字符串 / 布尔 /
+ * 时间值都不匹配 `number` —— 按规范即**类型错误**，没有可返回的值。
+ * TCK 用 `errorResult="true"` 逐条钉死了这个口径（`floor(null, 1)`、`abs("-1")`、
+ * `modulo(true, true)` 全是 Err）。三值语义管的是「值存在但未知」，不是「参数非法」。
+ *
+ * `actualType` 用 FEEL 的类型名（`number` / `string` / `null` / `date` …），便于宿主直接展示。
+ */
+export function argTypeError(
+  fnName: string,
+  param: string,
+  expectedType: string,
+  actualType: string,
+): FeelTypeError {
+  return new FeelTypeError(
+    `Function '${fnName}' expects a ${expectedType} for parameter '${param}' but got ${actualType}`,
+    {
+      code: FEEL_ERROR_CODES.EVAL_ARG_TYPE,
+      hint: `按 DMN 1.4 §10.3.4，形参 ${param} 的类型必须匹配；传 null 或其它类型是类型错误，不是"未知值"`,
+      details: { function: fnName, param, expectedType, actualType },
+    },
+  );
+}
+
+/**
+ * 实参**取值越界**（类型对、但超出规范允许的范围）。
+ * 目前只有舍入家族的 `scale`：DMN 1.4 §10.3.4.7 限定为 `[-6111, 6176]`
+ * （TCK 1141~1144 用 `(-6111 - 1)` 与 `(6176 + 1)` 把两端都测了）。
+ */
+export function argRangeError(
+  fnName: string,
+  param: string,
+  value: number,
+  min: number,
+  max: number,
+): FeelTypeError {
+  return new FeelTypeError(
+    `Function '${fnName}' requires parameter '${param}' to be within [${min}, ${max}] but got ${value}`,
+    {
+      code: FEEL_ERROR_CODES.EVAL_ARG_RANGE,
+      details: { function: fnName, param, value, min, max },
+    },
+  );
+}
+
+/**
+ * 运算**结果无定义**（参数类型对、但该取值下函数没有值）。
+ *
+ * 这条口径由 TCK 划开，容易被当成"三值语义"而写错：
+ * - **内置函数**无定义 → 抛（`sqrt(-1)` / `log(0)` / `modulo(x, 0)` 官方全标 `errorResult`）；
+ * - **运算符**除零 → `null`（`(10+20)/0` 官方期望就是 `null`，不是错误）。
+ * 即：运算符走三值传播，函数走签名/取值校验。
+ */
+export function undefinedResultError(fnName: string, detail: Record<string, unknown>): FeelTypeError {
+  return new FeelTypeError(`Function '${fnName}' is undefined for these arguments`, {
+    code: FEEL_ERROR_CODES.EVAL_UNDEFINED,
+    details: { function: fnName, ...detail },
+  });
+}
+
+export function durationComponentError(component: string, kind: string): FeelTypeError {
+  return new FeelTypeError(`Duration '${kind}' has no component '${component}'`, {
+    code: FEEL_ERROR_CODES.EVAL_DURATION_COMPONENT,
+    hint:
+      kind === 'years and months duration'
+        ? 'years and months duration 只有 .years / .months'
+        : 'days and time duration 只有 .days / .hours / .minutes / .seconds',
+    details: { component, kind },
   });
 }
 

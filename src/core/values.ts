@@ -119,6 +119,24 @@ export function toNumber(v: Value): number | null {
   return null;
 }
 
+/**
+ * 值的 FEEL 类型名（DMN 1.4 §10.3.1 的类型集合）。
+ * 用于**类型错误**的 message / `details.actualType` —— 宿主与编辑器都要能直接展示，
+ * 所以这里给的是 FEEL 口径的名字（`null` / `number` / `date and time` …），不是 JS 的 `typeof`。
+ */
+export function feelTypeName(v: Value): string {
+  if (v === null) return 'null';
+  if (typeof v === 'number') return 'number';
+  if (typeof v === 'string') return 'string';
+  if (typeof v === 'boolean') return 'boolean';
+  if (isTemporal(v)) return v.kind === 'dateTime' ? 'date and time' : v.kind;
+  if (isList(v)) return 'list';
+  if (isContext(v)) return 'context';
+  if (isRange(v)) return 'range';
+  if (isFunction(v)) return 'function';
+  return 'unknown';
+}
+
 /** 转为字符串；不可转为 null */
 export function toStr(v: Value): string | null {
   if (typeof v === 'string') return v;

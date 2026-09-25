@@ -10,17 +10,19 @@
 
 import { parseExpression, parseUnaryTests } from './parser.js';
 import { BUILTINS } from '../builtins/registry.js';
-import { TEMPORAL_FUNCTIONS } from './deferred.js';
+import { TEMPORAL_FUNCTIONS, TEMPORAL_PROPERTIES } from './deferred.js';
 import {
   FEEL_DIAGNOSTIC_CODES,
   FEEL_ERROR_CODES,
   diagnostic,
   functionNotAllowed,
   limitExceeded,
+  namedArgError,
   optionError,
   temporalNotLoaded,
   type Diagnostic,
 } from './errors.js';
+import { paramNamesOf } from './function-params.js';
 import {
   compareValues,
   deepEquals,
@@ -43,8 +45,10 @@ import {
   makeRange,
   type EvalResult,
   type EvalRuntime,
+  type FeelRange,
   type NativeFn,
   type Node,
+  type TypeSpec,
   type Value,
 } from './types.js';
 
@@ -70,6 +74,13 @@ export interface EvaluateOptions {
   timeoutMs?: number;
   /** 严格类型强制：为 true 时不接受字符串→数字的隐式转换 */
   strictCoercion?: boolean;
+  /**
+   * 模型**类型表**：`itemDefinition` 名 → 类型规格。
+   * `instance of t255` / `instance of tNumberList` 这类用例只有拿到模型定义才判得了
+   * （TCK 0070），故由宿主持有、求值时传入（引擎侧来自 moddle）。
+   * 名字未命中且不是内置类型名 → 判定为「不匹配」（不抛，见 `instanceOfSpec`）。
+   */
+  types?: Record<string, TypeSpec>;
 }
 
 /**
@@ -81,6 +92,8 @@ export interface FeelEvalRuntime extends EvalRuntime {
   strict: boolean;
   deadline: number;
   steps: number;
+  /** 模型类型表（`instance of <itemDefinition 名>` 用） */
+  types?: Record<string, TypeSpec>;
 }
 
 const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
@@ -91,6 +104,7 @@ const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
   'maxDepth',
   'timeoutMs',
   'strictCoercion',
+  'types',
 ]);
 
 function isPositiveInt(v: unknown): boolean {
@@ -220,6 +234,7 @@ function buildRuntime(options: EvaluateOptions): FeelEvalRuntime {
   };
   if (options.clock) rt.clock = options.clock;
   if (options.allowedFunctions) rt.allowed = new Set(options.allowedFunctions);
+  if (options.types) rt.types = options.types;
   return rt;
 }
 
@@ -249,38 +264,138 @@ function num(v: Value, rt: FeelEvalRuntime | undefined): number | null {
   return toNumber(v);
 }
 
-/** `instance of` 判定（null 只有 `any` 成立） */
-function instanceOf(v: Value, typeName: string): Value {
-  if (v === null) return typeName === 'any';
-  switch (typeName) {
-    case 'any':
-      return true;
-    case 'number':
-      return typeof v === 'number';
-    case 'string':
-      return typeof v === 'string';
-    case 'boolean':
-      return typeof v === 'boolean';
-    case 'list':
-      return isList(v);
-    case 'context':
-      return isContext(v);
+/** 形参缺省占位：命名参数只给了一部分时，缺的位置补 `null`（null 是 FEEL 一等值） */
+const NULL_NODE: Node = { type: 'lit', value: null, start: 0, end: 0 };
+
+/**
+ * 把**命名参数**按形参名表对位成位置参数（DMN 1.4 §10.3.2）。
+ *
+ * 三条硬规则（TCK 0050 / 1101 等组把每种错法都测了）：
+ * 1. 名字必须与规范**逐字**相符 → 否则抛 `unknown`；
+ * 2. 位置与命名不可**混用** → 抛 `mixed`；
+ * 3. 未给到的形参补 `null` 占位，**抛不抛由函数自己决定**
+ *    （`is(value1: X)` 缺 value2 → false；`round down(scale: 0)` 缺 n → 抛）。
+ */
+function reorderNamedArgs(
+  fnName: string | null,
+  names: readonly (string | null)[],
+  args: Node[],
+): Node[] {
+  if (fnName === null) throw namedArgError('unsupported', 'expression');
+  const params = paramNamesOf(fnName);
+  if (!params) throw namedArgError('unsupported', fnName);
+
+  const out: (Node | null)[] = new Array<Node | null>(params.length).fill(null);
+  for (let i = 0; i < args.length; i += 1) {
+    const name = names[i] ?? null;
+    const arg = args[i] as Node;
+    if (name === null) throw namedArgError('mixed', fnName);
+    const idx = params.indexOf(name);
+    if (idx < 0) throw namedArgError('unknown', fnName, { name, allowed: params });
+    if (out[idx] !== null) throw namedArgError('duplicate', fnName, { name, allowed: params });
+    out[idx] = arg;
+  }
+  return out.map((a) => a ?? NULL_NODE);
+}
+
+/** 区间的四个属性（DMN 1.4 §10.3.4.3）：`.start` / `.end` / `.start included` / `.end included` */
+function rangeProperty(range: FeelRange, name: string): Value {
+  switch (name) {
+    case 'start':
+      return range.from;
+    case 'end':
+      return range.to;
+    case 'start included':
+      return range.fromInclusive;
+    case 'end included':
+      return range.toInclusive;
+    default:
+      return null;
+  }
+}
+
+/** duration 的规范串是否含「天 / 时间」分量（→ `days and time duration`） */
+function isDaysAndTimeDuration(iso: string): boolean {
+  return /[DT]/.test(iso.replace(/^[-+]?P/, ''));
+}
+
+/**
+ * FEEL **内置**类型名 → 判定（名字大小写不敏感：TCK 写 `Any`，规范本文写 `any`）。
+ * 注意 `duration` 的两种细分（DMN 1.4 §10.3.4.4）必须分开判 —— TCK 0070 明确要求。
+ */
+const BUILTIN_TYPES: Record<string, (v: Value) => boolean> = {
+  any: () => true,
+  number: (v) => typeof v === 'number',
+  string: (v) => typeof v === 'string',
+  boolean: (v) => typeof v === 'boolean',
+  list: (v) => isList(v),
+  context: (v) => isContext(v),
+  range: (v) => isRange(v),
+  function: (v) => isFunction(v),
+  date: (v) => isTemporal(v) && v.kind === 'date',
+  time: (v) => isTemporal(v) && v.kind === 'time',
+  'date and time': (v) => isTemporal(v) && v.kind === 'dateTime',
+  datetime: (v) => isTemporal(v) && v.kind === 'dateTime',
+  duration: (v) => isTemporal(v) && v.kind === 'duration',
+  'years and months duration': (v) =>
+    isTemporal(v) && v.kind === 'duration' && !isDaysAndTimeDuration(v.iso),
+  'days and time duration': (v) =>
+    isTemporal(v) && v.kind === 'duration' && isDaysAndTimeDuration(v.iso),
+};
+
+/** 三值 every：任一 false → false；否则有 null → null；全 true → true */
+function everyOf(results: readonly Value[]): Value {
+  if (results.some((r) => r === false)) return false;
+  if (results.some((r) => r === null)) return null;
+  return true;
+}
+
+/**
+ * `instance of` 判定（DMN 1.4 §10.3.5）。
+ *
+ * 三条口径（都由 TCK 0070 定死）：
+ * 1. **顶层左值为 null 时不是任何类型的实例**，连 `any` 都不是（`null instance of Any` → false）；
+ * 2. 但**嵌套位置**的 null 视为与任何类型兼容（`{a: null} instance of context<a: string>` → true）——
+ *    即 null 表示"此处无值"，不参与结构判定；故用 `depth` 区分顶层与嵌套；
+ * 3. `context<…>` 是**结构子类型**判定：值可有多余键（`{a,b,c} instance of t_context_013`
+ *    → true），但定义里的每个键都必须存在且类型相符。
+ *
+ * `types` 是模型类型表；名字未命中且非内置 → 判 `false`（不是抛错：表达式的真值
+ * 依然确定，只是"不是该类型的实例"）。
+ */
+function instanceOfSpec(
+  v: Value,
+  spec: TypeSpec,
+  types?: Record<string, TypeSpec>,
+  depth = 0,
+): Value {
+  if (v === null) return depth > 0; // 顶层 null 不算实例；嵌套 null 视为兼容
+  if (depth > 16) return false; // 类型表自引用保护
+
+  switch (spec.kind) {
+    case 'named': {
+      const builtin = BUILTIN_TYPES[spec.name.toLowerCase()];
+      if (builtin) return builtin(v);
+      const def = types?.[spec.name];
+      return def ? instanceOfSpec(v, def, types, depth + 1) : false;
+    }
+    case 'list': {
+      if (!isList(v)) return false;
+      return everyOf(v.map((x) => instanceOfSpec(x, spec.item, types, depth + 1)));
+    }
+    case 'context': {
+      if (!isContext(v)) return false;
+      for (const e of spec.entries) {
+        if (!v.has(e.key)) return false; // 缺键 → 不是该结构
+        const r = instanceOfSpec(v.get(e.key) ?? null, e.type, types, depth + 1);
+        if (r !== true) return r;
+      }
+      return true; // 允许多余键
+    }
     case 'range':
       return isRange(v);
     case 'function':
       return isFunction(v);
-    case 'date':
-      return isTemporal(v) && v.kind === 'date';
-    case 'time':
-      return isTemporal(v) && v.kind === 'time';
-    case 'date and time':
-    case 'dateTime':
-      return isTemporal(v) && v.kind === 'dateTime';
-    case 'duration':
-    case 'years and months duration':
-      return isTemporal(v) && v.kind === 'duration';
-    default:
-      return null;
   }
 }
 
@@ -315,6 +430,26 @@ export function evaluateNode(
 
     case 'path': {
       const base = evaluateNode(node.base, ctx, warnings, builtins, runtime);
+
+      // 区间属性（DMN 1.4 §10.3.4.3）：`.start` / `.end` / `.start included` / `.end included`
+      if (isRange(base)) return rangeProperty(base, node.name);
+
+      // 时间值属性 → 委托 `./temporal`（实现不在 core，NFR-F11/F12）
+      if (isTemporal(base)) {
+        if (!TEMPORAL_PROPERTIES.has(node.name)) {
+          diag(
+            warnings,
+            FEEL_DIAGNOSTIC_CODES.EVAL_NO_PROPERTY,
+            `'${node.name}' is not a property of a ${base.kind} value`,
+            node,
+          );
+          return null;
+        }
+        const getter = builtins[node.name];
+        if (!getter) throw temporalNotLoaded(node.name);
+        return getter([base], ctx, runtime);
+      }
+
       if (isContext(base)) {
         if (!base.has(node.name)) {
           diag(
@@ -362,9 +497,17 @@ export function evaluateNode(
       );
     }
 
-    // `x in <区间|列表|上下文>`
+    // `x in <区间|列表|上下文|unary tests>`
     case 'in': {
       const v = evaluateNode(node.value, ctx, warnings, builtins, runtime);
+      // unary tests 形态：`10 in (1, < 5, >=10)` / `10 in !=10`。
+      // 各测试项用 `?` 指代被测试值，项间为 OR（三值）。
+      if (node.domain.type === 'tests') {
+        const qctx = ctx.with({ '?': v });
+        return tripleOr(
+          node.domain.tests.map((t) => evalUnaryTerm(t, qctx, warnings, builtins, runtime)),
+        );
+      }
       const domain = evaluateNode(node.domain, ctx, warnings, builtins, runtime);
       if (isRange(domain)) return rangeContains(domain, v);
       if (isList(domain)) {
@@ -394,11 +537,12 @@ export function evaluateNode(
       return c1 >= 0 && c2 <= 0;
     }
 
-    // `x instance of <类型名>`
+    // `x instance of <类型规格>`
     case 'instance':
-      return instanceOf(
+      return instanceOfSpec(
         evaluateNode(node.value, ctx, warnings, builtins, runtime),
-        node.typeName,
+        node.typeSpec,
+        runtime?.types,
       );
 
     // 函数字面量：闭包捕获**定义处**上下文，形参按位置绑定
@@ -423,6 +567,12 @@ export function evaluateNode(
         node.fromInclusive,
         node.toInclusive,
       );
+
+    // unary tests 列表独立求值：`?` 由上下文提供（`in` 已在自身分支内绑定 `?`）
+    case 'tests': {
+      const qctx = ctx.has('?') ? ctx : ctx.with({ '?': null });
+      return tripleOr(node.tests.map((t) => evalUnaryTerm(t, qctx, warnings, builtins, runtime)));
+    }
 
     // 上下文字面量：**后一项可见前一项**（FEEL 语义，故逐项累积作用域）
     case 'context': {
@@ -472,7 +622,11 @@ export function evaluateNode(
         }
       }
 
-      const args = node.args.map((a) => evaluateNode(a, ctx, warnings, builtins, runtime));
+      // 命名参数 → 先按形参名表对位（DMN 1.4 §10.3.2），再逐项求值
+      const argNodes = node.argNames
+        ? reorderNamedArgs(fnName, node.argNames, node.args)
+        : node.args;
+      const args = argNodes.map((a) => evaluateNode(a, ctx, warnings, builtins, runtime));
 
       if (!fn) {
         const label = node.callee.type === 'name' ? node.callee.name : 'expression';

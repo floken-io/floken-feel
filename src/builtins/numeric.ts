@@ -1,79 +1,94 @@
 /**
  * floken-feel · 数值内置函数
  *
- * 约定：任何一个参数不可用（null / 类型不符 / 越界）即整体返回 null，
- * 由求值器保持三值语义（NFR-F14）。
+ * 两条口径（TCK 逐条钉死，见 `./helpers.ts` 顶部注释）：
+ * 1. **形参有类型**：少给/多给参数、错形参名、传 `null` 或非 number → **抛错**，
+ *    不返回 `null`。返回 `null` 只用于「值存在但未知」（如 `sqrt(-1)`）。
+ * 2. `scale` 是**小数位数**，合法范围 `[-6111, 6176]`（DMN 1.4 §10.3.4.7）。
+ *
+ * 三个函数（`sum` / `min` / `abs` 等）另有非数值分支（如 duration），
+ * 由 `../temporal` 覆盖同名条目补齐（`withTemporal()` 的合并顺序）。
  */
 
 import type { NativeFn } from '../core/types.js';
 import { compareValues, toNumber } from '../core/values.js';
-import { numericList, roundTo, spread } from './helpers.js';
+import { undefinedResultError } from '../core/errors.js';
+import {
+  numericList,
+  optScale,
+  reqNumber,
+  requireArity,
+  roundScaled,
+  spread,
+} from './helpers.js';
+
+/** 舍入家族的共用骨架：`n` 必需、`scale` 选填（未给按 0） */
+function rounding(name: string, mode: 'floor' | 'ceiling' | 'up' | 'down' | 'halfUp' | 'halfDown'): NativeFn {
+  return (a) => {
+    requireArity(a, name, 1, 2);
+    const n = reqNumber(a, 0, name, 'n');
+    return roundScaled(n, optScale(a, 1, name), mode);
+  };
+}
 
 export const NUMERIC_BUILTINS: Record<string, NativeFn> = {
   // ----- 取整 / 舍入 -----
-  floor: (a) => {
-    const n = toNumber(a[0] ?? null);
-    return n === null ? null : Math.floor(n);
-  },
-  ceiling: (a) => {
-    const n = toNumber(a[0] ?? null);
-    return n === null ? null : Math.ceil(n);
-  },
-  round: (a) => {
-    const n = toNumber(a[0] ?? null);
-    if (n === null) return null;
-    const scale = a.length > 1 ? toNumber(a[1] ?? null) : 0;
-    return roundTo(n, scale ?? 0, 'halfUp');
-  },
-  'round half up': (a) => {
-    const n = toNumber(a[0] ?? null);
-    if (n === null) return null;
-    const scale = a.length > 1 ? toNumber(a[1] ?? null) : 0;
-    return roundTo(n, scale ?? 0, 'halfUp');
-  },
-  'round half down': (a) => {
-    const n = toNumber(a[0] ?? null);
-    if (n === null) return null;
-    const scale = a.length > 1 ? toNumber(a[1] ?? null) : 0;
-    return roundTo(n, scale ?? 0, 'halfDown');
-  },
+  floor: rounding('floor', 'floor'),
+  ceiling: rounding('ceiling', 'ceiling'),
+  round: rounding('round', 'halfUp'),
+  'round half up': rounding('round half up', 'halfUp'),
+  'round half down': rounding('round half down', 'halfDown'),
+  'round up': rounding('round up', 'up'),
+  'round down': rounding('round down', 'down'),
   decimal: (a) => {
-    const n = toNumber(a[0] ?? null);
-    const scale = a.length > 1 ? toNumber(a[1] ?? null) : null;
-    if (n === null || scale === null) return null;
-    return roundTo(n, Math.trunc(scale), 'halfUp');
+    requireArity(a, 'decimal', 1, 2);
+    const n = reqNumber(a, 0, 'decimal', 'n');
+    // scale 为负表示"取整到 10 的幂"，故允许；范围同舍入家族
+    return roundScaled(n, optScale(a, 1, 'decimal'), 'halfUp');
   },
 
   // ----- 一元数学 -----
   abs: (a) => {
-    const n = toNumber(a[0] ?? null);
-    return n === null ? null : Math.abs(n);
+    requireArity(a, 'abs', 1);
+    const n = reqNumber(a, 0, 'abs', 'n');
+    return Math.abs(n);
   },
+  /**
+   * `modulo(dividend, divisor)` = `dividend - divisor * floor(dividend / divisor)`（DMN 1.4 §10.3.4.7）。
+   * 注意**不是** JS 的 `%`（后者符号跟随被除数）：`modulo(-12, 5)` = 3、`modulo(12, -5)` = -3。
+   */
   modulo: (a) => {
-    const x = toNumber(a[0] ?? null);
-    const y = toNumber(a[1] ?? null);
-    if (x === null || y === null || y === 0) return null;
-    return x % y;
+    requireArity(a, 'modulo', 2);
+    const dividend = reqNumber(a, 0, 'modulo', 'dividend');
+    const divisor = reqNumber(a, 1, 'modulo', 'divisor');
+    if (divisor === 0) throw undefinedResultError('modulo', { dividend, divisor });
+    return dividend - divisor * Math.floor(dividend / divisor);
   },
   sqrt: (a) => {
-    const n = toNumber(a[0] ?? null);
-    return n === null || n < 0 ? null : Math.sqrt(n);
+    requireArity(a, 'sqrt', 1);
+    const n = reqNumber(a, 0, 'sqrt', 'number');
+    if (n < 0) throw undefinedResultError('sqrt', { number: n });
+    return Math.sqrt(n);
   },
   log: (a) => {
-    const n = toNumber(a[0] ?? null);
-    return n === null || n <= 0 ? null : Math.log(n);
+    requireArity(a, 'log', 1);
+    const n = reqNumber(a, 0, 'log', 'number');
+    if (n <= 0) throw undefinedResultError('log', { number: n });
+    return Math.log(n);
   },
   exp: (a) => {
-    const n = toNumber(a[0] ?? null);
-    return n === null ? null : Math.exp(n);
+    requireArity(a, 'exp', 1);
+    return Math.exp(reqNumber(a, 0, 'exp', 'number'));
   },
   odd: (a) => {
-    const n = toNumber(a[0] ?? null);
-    return n === null ? null : Math.abs(n % 2) === 1;
+    requireArity(a, 'odd', 1);
+    const n = reqNumber(a, 0, 'odd', 'number');
+    return Number.isInteger(n) ? Math.abs(n % 2) === 1 : false;
   },
   even: (a) => {
-    const n = toNumber(a[0] ?? null);
-    return n === null ? null : Math.abs(n % 2) === 0;
+    requireArity(a, 'even', 1);
+    const n = reqNumber(a, 0, 'even', 'number');
+    return Number.isInteger(n) ? n % 2 === 0 : false;
   },
 
   // ----- 列表聚合 -----

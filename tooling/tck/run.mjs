@@ -50,9 +50,23 @@ const { evaluate, isRange, isContext, isTemporal } = feel;
 const CASES = path.resolve(arg('cases', 'tmp/tck/cases.json'));
 const cases = JSON.parse(fs.readFileSync(CASES, 'utf8'));
 
+/**
+ * 模型**类型表**（`extract.mjs` 从各模型的 `itemDefinition` 抽出）。
+ * `instance of t255` / `instance of tNumberList` 这类断言只有拿到模型定义才判得了
+ * （TCK 0070）；用例通过 `model` 字段关联到所属模型。
+ */
+const TYPES_PATH = path.resolve(arg('types', 'tmp/tck/types.json'));
+const TYPES = fs.existsSync(TYPES_PATH) ? JSON.parse(fs.readFileSync(TYPES_PATH, 'utf8')) : {};
+
 /** R5：固定时钟（2026-05-12 是有意选的"周二"，能同时暴露周历/工作日类边界） */
 const CLOCK = () => new Date('2026-05-12T00:00:00.000Z');
 const OPTIONS = { clock: CLOCK };
+
+/** 按用例所属模型补上类型表（无关用例共用同一份 OPTIONS，不额外分配） */
+const optsFor = (c) => {
+  const types = TYPES[c.model];
+  return types ? { ...OPTIONS, types } : OPTIONS;
+};
 
 // ---------- R2：相等判定 ----------
 
@@ -129,12 +143,13 @@ for (const c of cases) {
   const rec = { ...c, status: 'fail', reason: 'unrun', loose: false };
 
   try {
-    const ctx = c.context ? evaluate(c.context, undefined, OPTIONS).value : undefined;
+    const opts = optsFor(c);
+    const ctx = c.context ? evaluate(c.context, undefined, opts).value : undefined;
     let actual;
     let threw = false;
     let error = null;
     try {
-      actual = evaluate(c.expression, ctx, OPTIONS).value;
+      actual = evaluate(c.expression, ctx, opts).value;
     } catch (e) {
       threw = true;
       error = e;
@@ -166,7 +181,7 @@ for (const c of cases) {
     } else {
       let expected;
       try {
-        expected = evaluate(c.expected, undefined, OPTIONS).value;
+        expected = evaluate(c.expected, undefined, opts).value;
       } catch (e) {
         rec.status = 'fail';
         rec.reason = 'expected-unparseable';

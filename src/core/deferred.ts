@@ -36,3 +36,32 @@ export const TEMPORAL_FUNCTIONS: ReadonlySet<string> = new Set([
    */
   '@',
 ]);
+
+/**
+ * `./temporal` 独占的**属性名**（路径访问 `x.prop` 的右侧）。
+ *
+ * 与 `TEMPORAL_FUNCTIONS` 分开的原因是用途不同：这里是 `path` 节点的分派依据，
+ * 而 `year` / `weekday` 等**既**能当函数调、**也**能当属性读（FEEL 两写法等价），
+ * 故两表有交集。核心（`core/evaluator.ts` 的 `path` 分支）只认本表，
+ * 命中后把值交给 `builtins[name]([value])` —— 实现仍住在 `./temporal`，core 零依赖。
+ */
+export const TEMPORAL_PROPERTIES: ReadonlySet<string> = new Set([
+  // 日期 / 时间字段（与同名函数共用实现）
+  'year',
+  'month',
+  'day',
+  'hour',
+  'minute',
+  'second',
+  'weekday',
+  // 只能路径访问的属性
+  'time offset',
+  'timezone',
+  // 时长分量（跨类访问由 temporal 档抛 `FEEL_EVAL_DURATION_COMPONENT`）
+  'years',
+  'months',
+  'days',
+  'hours',
+  'minutes',
+  'seconds',
+]);

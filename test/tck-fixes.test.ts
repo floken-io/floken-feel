@@ -80,3 +80,82 @@ describe('floken-feel · TCK 修复回归 · 区间（Range 一等公民）', ()
     expect(evaluate('"a" in <= 10').value).toBe(null);
   });
 });
+
+describe('floken-feel · TCK 修复回归 · 形参有类型（0050/0056/1101/1102/1141~1144）', () => {
+  const catchErr = (src: string) => {
+    try {
+      evaluate(src);
+      return null;
+    } catch (e) {
+      return e as { code: string; details?: Record<string, unknown> };
+    }
+  };
+
+  it('`scale` 是**小数位数**而非步长（TCK 1101/1102）', () => {
+    expect(evaluate('floor(1.56, 1)').value).toBe(1.5);
+    expect(evaluate('floor(-1.56, 1)').value).toBe(-1.6);
+    expect(evaluate('ceiling(1.56, 1)').value).toBe(1.6);
+    expect(evaluate('ceiling(-1.56, 1)').value).toBe(-1.5);
+  });
+
+  it('round up/down 按**绝对值**方向（TCK 1141/1142）', () => {
+    expect(evaluate('round up(-5.5, 0)').value).toBe(-6);
+    expect(evaluate('round down(-5.5, 0)').value).toBe(-5);
+    expect(evaluate('round up(-1.126, 2)').value).toBe(-1.13);
+    expect(evaluate('round down(-1.126, 2)').value).toBe(-1.12);
+  });
+
+  it('round half up/down 只在中点分道（TCK 1143/1144）', () => {
+    expect(evaluate('round half up(5.5, 0)').value).toBe(6);
+    expect(evaluate('round half up(-5.5, 0)').value).toBe(-6);
+    expect(evaluate('round half down(5.5, 0)').value).toBe(5);
+    expect(evaluate('round half down(-5.5, 0)').value).toBe(-5);
+    // 非中点：两者同结果
+    expect(evaluate('round half down(-1.126, 2)').value).toBe(-1.13);
+  });
+
+  it('`scale` 合法范围为 [-6111, 6176]，越界抛 EVAL_ARG_RANGE', () => {
+    expect(evaluate('round up(5.5, 6176)').value).toBe(5.5);
+    const err = catchErr('round up(5.5, (-6111 - 1))');
+    expect(err?.code).toBe('FEEL_EVAL_ARG_RANGE');
+    expect(err?.details).toMatchObject({ param: 'scale', min: -6111, max: 6176 });
+  });
+
+  it('`null` / 字符串 / 布尔 都不是 number → 抛 EVAL_ARG_TYPE（不是返回 null）', () => {
+    for (const src of ['floor(null, 1)', 'abs("-1")', 'abs(null)', 'sqrt("4")', 'abs(true)']) {
+      expect(catchErr(src)?.code, src).toBe('FEEL_EVAL_ARG_TYPE');
+    }
+  });
+
+  it('少给 / 多给参数抛 EVAL_ARG_COUNT，且 details 给出区间', () => {
+    expect(catchErr('abs()')?.code).toBe('FEEL_EVAL_ARG_COUNT');
+    expect(catchErr('abs(1, 1)')?.details?.expected).toEqual([1]);
+    expect(catchErr('floor()')?.code).toBe('FEEL_EVAL_ARG_COUNT');
+    const tooMany = catchErr('floor(1.5, 1, 2)');
+    expect(tooMany?.code).toBe('FEEL_EVAL_ARG_COUNT');
+    expect(tooMany?.details?.expected).toEqual([1, 2]);
+  });
+
+  it('modulo 不等于 JS `%`：商向下取整（TCK 0056）', () => {
+    expect(evaluate('modulo(10, 4)').value).toBe(2);
+    expect(evaluate('modulo(-12, 5)').value).toBe(3);
+    expect(evaluate('modulo(12, -5)').value).toBe(-3);
+    expect(evaluate('modulo(-12, -5)').value).toBe(-2);
+    expect(evaluate('modulo(-10.1, 4.5)').value).toBeCloseTo(3.4, 10);
+  });
+
+  it('内置函数结果无定义 → 抛 EVAL_UNDEFINED；运算符除零才走 null', () => {
+    expect(catchErr('modulo(10, 0)')?.code).toBe('FEEL_EVAL_UNDEFINED');
+    expect(catchErr('sqrt(-1)')?.code).toBe('FEEL_EVAL_UNDEFINED');
+    expect(catchErr('log(0)')?.code).toBe('FEEL_EVAL_UNDEFINED');
+    expect(evaluate('(10+20)/0').value).toBe(null);
+  });
+
+  it('abs 对 duration 有定义、对 date/time 抛类型错（TCK 0050）', () => {
+    expect(evaluate('abs(duration("-P1D"))').value).toMatchObject({ kind: 'duration' });
+    expect(evaluate('abs(duration("-P1D")) = duration("P1D")').value).toBe(true);
+    expect(evaluate('abs(duration("-P1Y")) = duration("P1Y")').value).toBe(true);
+    expect(catchErr('abs(time("00:00:00"))')?.code).toBe('FEEL_EVAL_ARG_TYPE');
+    expect(catchErr('abs(date("2018-12-06"))')?.code).toBe('FEEL_EVAL_ARG_TYPE');
+  });
+});

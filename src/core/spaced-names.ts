@@ -41,6 +41,8 @@ export const SPACED_NAMES: Set<string> = new Set([
   // 时间（实现见 ./temporal）
   'date and time',
   'years and months duration',
+  // 类型名（`instance of days and time duration`，DMN 1.4 §10.3.5）
+  'days and time duration',
 ]);
 
 /** 追加一个多词名（名字不含空格时为 no-op） */

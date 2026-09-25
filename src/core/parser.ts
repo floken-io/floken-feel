@@ -17,6 +17,7 @@ import {
   type ArithOp,
   type CompareOp,
   type Node,
+  type TypeSpec,
   type Value,
 } from './types.js';
 import { FEEL_ERROR_CODES, expectedTokenError, syntaxError } from './errors.js';
@@ -26,7 +27,16 @@ import { SPACED_NAMES } from './spaced-names.js';
 
 const CMP_OPS = new Set(['=', '!=', '<', '<=', '>', '>=']);
 
-/** `instance of` 右侧允许的 FEEL 类型名 */
+/** 泛型缺省参数（`list<>`）当作 `any` */
+const ANY_SPEC: TypeSpec = { kind: 'named', name: 'any', start: 0, end: 0 };
+
+/**
+ * FEEL **内置**类型名（DMN 1.4 §10.3.5）。
+ *
+ * ⚠️ 仅供编辑器补全 / 文档参考，**语法分析不再用它做白名单**：
+ * `instance of <某模型的 itemDefinition 名>` 是合法的（TCK 0070 的 `t255`、
+ * `tNumberList` 即此），名字合法性只有运行期拿到类型表才判得了。
+ */
 export const INSTANCE_TYPES: ReadonlySet<string> = new Set([
   'any',
   'boolean',
@@ -166,10 +176,10 @@ class Parser {
         };
         continue;
       }
-      // `x in <区间|列表|上下文>`（成员判定）
+      // `x in <区间|列表|上下文|unary tests>`（成员判定）
       if (this.at('kw', 'in')) {
         this.advance();
-        const domain = this.parseAdditive();
+        const domain = this.parseInDomain();
         left = { type: 'in', value: left, domain, start: left.start, end: domain.end };
         continue;
       }
@@ -182,30 +192,13 @@ class Parser {
         left = { type: 'between', value: left, low, high, start: left.start, end: high.end };
         continue;
       }
-      // `x instance of <类型名>`
+      // `x instance of <类型规格>`
       if (this.at('kw', 'instance')) {
-        const instTok = this.advance();
+        this.advance();
         this.expect('kw', 'of');
-        const typeTok = this.cur();
-        if (typeTok.type === 'name' && INSTANCE_TYPES.has(typeTok.value)) {
-          this.advance();
-          left = {
-            type: 'instance',
-            value: left,
-            typeName: typeTok.value,
-            start: left.start,
-            end: typeTok.end,
-          };
-          continue;
-        }
-        throw syntaxError(
-          `Expected a FEEL type name after 'instance of' but found '${typeTok.value || 'EOF'}'`,
-          { from: instTok.start, to: typeTok.end },
-          {
-            code: FEEL_ERROR_CODES.SYNTAX_INSTANCE_OF_TYPE,
-            details: { found: typeTok.value || 'EOF', allowed: [...INSTANCE_TYPES] },
-          },
-        );
+        const spec = this.parseTypeSpec();
+        left = { type: 'instance', value: left, typeSpec: spec, start: left.start, end: spec.end };
+        continue;
       }
       return left;
     }
@@ -260,9 +253,11 @@ class Parser {
       }
       if (this.at('lparen')) {
         this.advance();
-        const args = this.parseArgs();
+        const { args, argNames } = this.parseArgs();
         const close = this.expect('rparen');
-        base = { type: 'call', callee: base, args, start: base.start, end: close.end };
+        base = argNames.some((n) => n !== null)
+          ? { type: 'call', callee: base, args, argNames, start: base.start, end: close.end }
+          : { type: 'call', callee: base, args, start: base.start, end: close.end };
         continue;
       }
       // `list[x]`：下标 / 过滤统一（FEEL 方括号语义，运行时定夺）
@@ -278,13 +273,28 @@ class Parser {
     }
   }
 
-  private parseArgs(): Node[] {
+  /**
+   * 调用实参：`f(1, 2)`（位置）或 `f(n: -1, scale: 2)`（命名，DMN 1.4 §10.3.2）。
+   * 命名参数的**对位与校验**留到求值期（要查形参名表，见 `core/function-params.ts`）；
+   * 语法层只负责认出 `name :` 这一形态。
+   */
+  private parseArgs(): { args: Node[]; argNames: (string | null)[] } {
     const args: Node[] = [];
-    if (this.at('rparen')) return args;
+    const argNames: (string | null)[] = [];
+    if (this.at('rparen')) return { args, argNames };
     do {
+      const t = this.cur();
+      const next = this.tokens[this.pos + 1];
+      let name: string | null = null;
+      if ((t.type === 'name' || t.type === 'kw') && next?.type === 'colon') {
+        name = t.value;
+        this.advance();
+        this.advance(); // 吃掉 `:`
+      }
+      argNames.push(name);
       args.push(this.parseExpression());
     } while (this.eat('comma'));
-    return args;
+    return { args, argNames };
   }
 
   private parsePrimary(): Node {
@@ -501,6 +511,150 @@ class Parser {
     }
 
     return this.unexpected();
+  }
+
+  /**
+   * `instance of` 右侧的类型规格（DMN 1.4 §10.3.5）：
+   * - 具名：`number` / `Any` / `date and time` / 模型 itemDefinition 名（`t255`）
+   * - 泛型：`list<Any>` / `range<number>`
+   * - 结构：`context<a: string, b: number>`
+   * - 函数：`function<> -> Any` / `function<p: string> -> string`
+   *
+   * **不做白名单校验**：类型名可能来自 DMN 模型的 itemDefinition，
+   * 只有运行期拿到类型表才判得了合法性（未知名字运行期按「不匹配」处理）。
+   */
+  private parseTypeSpec(): TypeSpec {
+    const t = this.cur();
+    if (t.type !== 'name' && t.type !== 'kw') {
+      throw syntaxError(
+        `Expected a FEEL type name after 'instance of' but found '${t.value || 'EOF'}'`,
+        { from: t.start, to: t.end },
+        { code: FEEL_ERROR_CODES.SYNTAX_INSTANCE_OF_TYPE, details: { found: t.value || 'EOF' } },
+      );
+    }
+    this.advance();
+    const name = t.value;
+    if (!this.at('op', '<')) return { kind: 'named', name, start: t.start, end: t.end };
+
+    this.advance(); // 吃掉 `<`
+    const lower = name.toLowerCase();
+
+    // `context<a: T, b: T>`：键值对形式，与其它泛型的「逗号分隔类型」不同
+    if (lower === 'context') {
+      const entries: { key: string; type: TypeSpec }[] = [];
+      if (!this.at('op', '>')) {
+        do {
+          const keyTok = this.cur();
+          if (keyTok.type !== 'name' && keyTok.type !== 'kw' && keyTok.type !== 'str') {
+            throw syntaxError(
+              `Expected a context key but found '${keyTok.value || 'EOF'}'`,
+              { from: keyTok.start, to: keyTok.end },
+              { code: FEEL_ERROR_CODES.SYNTAX_INSTANCE_OF_TYPE, details: { found: keyTok.value } },
+            );
+          }
+          this.advance();
+          this.expect('colon');
+          entries.push({ key: keyTok.value, type: this.parseTypeSpec() });
+        } while (this.eat('comma'));
+      }
+      const close = this.expect('op', '>');
+      return { kind: 'context', entries, start: t.start, end: close.end };
+    }
+
+    // 其余泛型：逗号分隔的类型参数（`function` 的形参可写成 `p: T`）
+    const args: TypeSpec[] = [];
+    if (!this.at('op', '>')) {
+      do {
+        const next = this.tokens[this.pos + 1];
+        if (this.cur().type === 'name' && next?.type === 'colon') {
+          this.advance();
+          this.advance();
+        }
+        args.push(this.parseTypeSpec());
+      } while (this.eat('comma'));
+    }
+    const close = this.expect('op', '>');
+
+    if (lower === 'list') {
+      return { kind: 'list', item: args[0] ?? ANY_SPEC, start: t.start, end: close.end };
+    }
+    if (lower === 'range') {
+      return { kind: 'range', item: args[0] ?? ANY_SPEC, start: t.start, end: close.end };
+    }
+    if (lower === 'function') {
+      const result = this.eat('op', '->') ? this.parseTypeSpec() : null;
+      return { kind: 'function', result, start: t.start, end: result?.end ?? close.end };
+    }
+    // 未知泛型名 → 退化成具名（运行期按未知类型处理）
+    return { kind: 'named', name, start: t.start, end: close.end };
+  }
+
+  /**
+   * `in` 右侧的 domain —— 按 FEEL 10.3.2.4「unary tests」解析，而非普通表达式：
+   * - `[` / `]` 开头 → 区间或列表（沿用 primary 的既有语义）
+   * - `(` 开头 → 先试区间 `(a..b)`；失败则按括号内**逗号分隔的 unary tests 列表**
+   * - `<` `<=` `>` `>=` `=` `!=` 开头 → 单个 unary test（如 `10 in !=10`）
+   * - 其余 → 普通表达式（裸值，运行期按「相等」判定）
+   *
+   * 不能直接 `parseAdditive`：`(1, 5, 9)` 在表达式层是非法语法
+   * （FEEL 无通用括号逗号构造），只有 unary tests 上下文才允许。
+   */
+  private parseInDomain(): Node {
+    const t = this.cur();
+
+    if (t.type === 'lbracket' || t.type === 'rbracket') return this.parsePrimary();
+
+    if (t.type === 'lparen') {
+      const savePos = this.pos;
+      const saveDepth = this.rangeDepth;
+      try {
+        const grouped = this.parsePrimary();
+        // primary 成功且后面不是逗号 → 真正的区间 `(a..b)` 或分组 `(a)`
+        if (!this.at('comma')) return grouped;
+      } catch {
+        // 落到下面按 unary tests 列表重解析（语法错误会在重解析时自然抛出）
+      }
+      this.pos = savePos;
+      this.rangeDepth = saveDepth;
+      return this.parseParenTests();
+    }
+
+    if (t.type === 'op' && CMP_OPS.has(t.value)) {
+      // `<` `<=` `>` `>=` `=` → 仍走 primary 的**区间等价**（保持既有行为，零回归）
+      if (t.value !== '!=') return this.parsePrimary();
+      // `!=` 无单一区间等价形式 → 单个 unary test（`10 in !=10`）
+      const opTok = this.advance();
+      const rhs = this.parseAdditive();
+      const q: Node = { type: 'name', name: '?', start: t.start, end: t.start };
+      return {
+        type: 'tests',
+        tests: [
+          {
+            type: 'compare',
+            op: '!=',
+            left: q,
+            right: rhs,
+            start: t.start,
+            end: rhs.end,
+          },
+        ],
+        start: t.start,
+        end: rhs.end,
+      };
+    }
+
+    return this.parseAdditive();
+  }
+
+  /** `(t1, t2, …)`：括号内逗号分隔的 unary tests 列表（项间 OR） */
+  private parseParenTests(): Node {
+    const open = this.expect('lparen');
+    const tests: Node[] = [];
+    do {
+      tests.push(this.parseUnaryTest());
+    } while (this.eat('comma'));
+    const close = this.expect('rparen');
+    return { type: 'tests', tests, start: open.start, end: close.end };
   }
 
   private parseIterVars(): { name: string; expr: Node }[] {

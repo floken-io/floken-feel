@@ -128,6 +128,59 @@ function collectDecisions(dmnSource) {
   return map;
 }
 
+// ---------- itemDefinition → 类型表 ----------
+
+/** 类型名引用 → 具名规格（名字大小写原样保留，判定时统一小写） */
+function typeRefSpec(name) {
+  return { kind: 'named', name: name || 'any' };
+}
+
+/**
+ * 抽 DMN 模型的 `itemDefinition` 表（`instance of <模型类型名>` 需要它，见 TCK 0070）。
+ *
+ * ⚠️ **有意忽略 `allowedValues`**：TCK 明确期望 `256 instance of t255` 为 **true**，
+ * 而 `t255` 的 allowedValues 恰是 `[0..255]` —— 这证明 `instance of` 只看**类型**，
+ * 不看取值域（同 `1.4` 规范 §10.3.5 对 `instance of` 的定义）。
+ *
+ * 四种形态（DMN 1.4 §7.3.2）：
+ * - `typeRef` 单引用 → 具名（`Any` / `number` / 另一个 itemDefinition 名）
+ * - `isCollection="true"` → `list<T>`
+ * - `itemComponent*` → `context<a: T, …>`
+ * - `functionItem` → `function<…> -> T`
+ */
+function collectItemDefinitions(dmnSource) {
+  const table = {};
+  const tree = parseTree(dmnSource);
+  for (const def of findAll(tree, 'itemDefinition')) {
+    const name = def.attrs.name;
+    if (!name) continue;
+
+    const components = def.children.filter((c) => c.local === 'itemComponent');
+    const fnItem = def.children.find((c) => c.local === 'functionItem');
+    const typeRef = def.children.find((c) => c.local === 'typeRef')?.text.trim();
+
+    let spec;
+    if (components.length) {
+      spec = {
+        kind: 'context',
+        entries: components.map((c) => ({
+          key: c.attrs.name ?? '',
+          type: typeRefSpec(c.children.find((x) => x.local === 'typeRef')?.text.trim()),
+        })),
+      };
+    } else if (fnItem) {
+      const out = fnItem.attrs.outputTypeRef;
+      spec = { kind: 'function', result: out ? typeRefSpec(out) : null };
+    } else {
+      spec = typeRefSpec(typeRef);
+    }
+
+    if (def.attrs.isCollection === 'true') spec = { kind: 'list', item: spec };
+    table[name] = spec;
+  }
+  return table;
+}
+
 // ---------- 期望值 / 输入值 → FEEL 源码 ----------
 
 /** `xsd:string` 之外的标量要 trim；字符串保留原样（尾空格是数据） */
@@ -268,6 +321,8 @@ groups.sort((a, b) => a.label.localeCompare(b.label));
 const allCases = [];
 const allGaps = [];
 const labels = [];
+/** `模型文件名 → 类型表`（只有带 itemDefinition 的模型才登记） */
+const typesByModel = {};
 
 for (const g of groups) {
   const files = fs.readdirSync(g.dir);
@@ -277,7 +332,10 @@ for (const g of groups) {
     console.warn(`· 跳过 ${g.label}（缺 .dmn 或 .xml）`);
     continue;
   }
-  const decisions = collectDecisions(fs.readFileSync(path.join(g.dir, dmnName), 'utf8'));
+  const dmnSource = fs.readFileSync(path.join(g.dir, dmnName), 'utf8');
+  const decisions = collectDecisions(dmnSource);
+  const itemDefs = collectItemDefinitions(dmnSource);
+  if (Object.keys(itemDefs).length) typesByModel[dmnName] = itemDefs;
   const { cases, gaps } = collectCases(fs.readFileSync(path.join(g.dir, testName), 'utf8'), decisions, g.label);
   allCases.push(...cases);
   allGaps.push(...gaps);
@@ -294,6 +352,7 @@ const write = (name, data) => fs.writeFileSync(path.join(OUT_DIR, name), JSON.st
 write('cases.json', allCases);
 write('labels.json', labels);
 write('extract-gaps.json', allGaps);
+write('types.json', typesByModel);
 
 const runnable = allCases.filter((c) => c.expression !== null);
 const byLevel = {};
@@ -307,7 +366,9 @@ console.log(`  组数(label): ${labels.length}  ${JSON.stringify(levelCount)}`);
 console.log(`  断言总数: ${allCases.length}   可跑: ${runnable.length}   表达式缺失: ${allGaps.length}`);
 console.log(`  inputNode 带入上下文的用例: ${allCases.filter((c) => c.context).length}`);
 console.log(`  errorResult=true 的用例: ${allCases.filter((c) => c.errorResult).length}`);
-console.log(`  产物: ${path.relative(process.cwd(), OUT_DIR)}/{cases,labels,extract-gaps}.json`);
+const typeCount = Object.values(typesByModel).reduce((n, t) => n + Object.keys(t).length, 0);
+console.log(`  类型表: ${Object.keys(typesByModel).length} 个模型 / ${typeCount} 条 itemDefinition`);
+console.log(`  产物: ${path.relative(process.cwd(), OUT_DIR)}/{cases,labels,extract-gaps,types}.json`);
 if (allGaps.length) {
   const groupsWithGaps = [...new Set(allGaps.map((g) => g.label))];
   console.log(`  ⚠ 表达式缺失涉及 ${groupsWithGaps.length} 组: ${groupsWithGaps.slice(0, 8).join(', ')}${groupsWithGaps.length > 8 ? ' …' : ''}`);
