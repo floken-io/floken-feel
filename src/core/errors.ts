@@ -64,6 +64,8 @@ export const FEEL_ERROR_CODES = {
   SYNTAX_INSTANCE_OF_TYPE: 'FEEL_SYNTAX_INSTANCE_OF_TYPE',
   // 能力未加载
   NOT_LOADED_TEMPORAL: 'FEEL_NOT_LOADED_TEMPORAL',
+  // 运行环境不满足（可选的 peer 依赖没装）
+  ENV_TEMPORAL_MISSING: 'FEEL_ENV_TEMPORAL_MISSING',
   // 选项契约
   OPTION_UNKNOWN: 'FEEL_OPTION_UNKNOWN',
   OPTION_INVALID: 'FEEL_OPTION_INVALID',
@@ -84,6 +86,7 @@ export const FEEL_ERROR_CODES = {
   EVAL_ARG_TYPE: 'FEEL_EVAL_ARG_TYPE',
   EVAL_ARG_RANGE: 'FEEL_EVAL_ARG_RANGE',
   EVAL_UNDEFINED: 'FEEL_EVAL_UNDEFINED',
+  EVAL_TEMPORAL_VALUE: 'FEEL_EVAL_TEMPORAL_VALUE',
 } as const;
 
 /** 诊断码表（不抛，随结果返回） */
@@ -153,6 +156,18 @@ export class FeelOptionError extends FeelError {}
 /** 必需能力未加载（当前只有 `./temporal`） */
 export class FeelNotLoadedError extends FeelError {}
 
+/**
+ * 运行环境不满足：**可选 peer 依赖没装**。
+ *
+ * 与 `FeelNotLoadedError` 的区别是"缺的东西在哪一侧"：
+ * - `FEEL_NOT_LOADED_TEMPORAL` —— 依赖在、只是你还没 import `./temporal`（**照提示做即可解决**）；
+ * - `FEEL_ENV_TEMPORAL_MISSING` —— 依赖本身没装，改代码没用，得装包（**宿主环境问题**）。
+ *
+ * 为什么必须显式化：动态 `import()` 失败时 Node 抛的是 `ERR_MODULE_NOT_FOUND` ——
+ * 裸抛一个无 `code`/无 `hint` 的宿主错误违反 AGENTS.md §5「四禁」（禁裸抛）。
+ */
+export class FeelEnvError extends FeelError {}
+
 /** 超出宿主设定的资源上限 */
 export class FeelLimitError extends FeelError {}
 
@@ -210,6 +225,25 @@ export function temporalNotLoaded(fnName: string): FeelNotLoadedError {
     code: FEEL_ERROR_CODES.NOT_LOADED_TEMPORAL,
     hint: 'await import("floken-feel/temporal") 后重试，或改用 evaluateTemporal()',
     details: { function: fnName, module: 'floken-feel/temporal' },
+  });
+}
+
+/**
+ * 时间字面量 / 分量非法（`date("2017-13-10")`、`time(24,59,45,null)`、
+ * `date and time("2017-12-31T7:00:00")`）。
+ *
+ * 为什么必须抛而不是返回 `null`：FEEL 的时间构造器形参都是有类型的
+ * （`date(year: number, month: number, day: number)`），文本格式不合规同样是
+ * 类型错误。TCK 1115/1116/1117 三组把每种坏写法都列为 `errorResult`。
+ */
+export function temporalValueError(
+  fnName: string,
+  detail: { value?: string; expected?: string; component?: string },
+): FeelTypeError {
+  const what = detail.value !== undefined ? `'${detail.value}'` : `'${detail.component ?? '?'}'`;
+  return new FeelTypeError(`Function '${fnName}' cannot accept ${what} as a ${detail.expected ?? 'temporal'} value`, {
+    code: FEEL_ERROR_CODES.EVAL_TEMPORAL_VALUE,
+    details: { function: fnName, ...detail },
   });
 }
 

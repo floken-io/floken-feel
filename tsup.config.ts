@@ -17,6 +17,8 @@ export default defineConfig({
   splitting: true,
   treeshake: true,
   clean: true,
-  // \u26005\u2605\u2605 绝对不能被 bundle 进产物（NFR-F12）：core/unary-tests 不得含 temporal 静态引用
-  external: ['temporal-polyfill'],
+  // ★★ 绝对不能被 bundle 进产物（NFR-F12）：core/unary-tests 不得含 temporal 静态引用。
+  // 同时列子路径：实现源是 `temporal-polyfill/implementation`（见 src/temporal/index.ts），
+  // 只写包名的话，将来某次把 specifier 改成字面量就会被 esbuild 静默打进来。
+  external: ['temporal-polyfill', 'temporal-polyfill/*'],
 });

@@ -1,10 +1,15 @@
 /**
  * floken-feel · temporal 子入口
  *
- * 只有本档允许接触 temporal-polyfill，且为**动态 import**（Q9 / NFR-F12）：
- * - Node 26+ 原生 `globalThis.Temporal` 存在时直接用；
- * - 否则 `typeof globalThis.Temporal === 'undefined'` 时才动态加载 polyfill。
- * 核心档（`.` / `./unary-tests`）绝不静态引用本档与 temporal-polyfill。
+ * ★ 时间实现源（ADR Q32，2026-09-25 用户拍板）：**统一使用 `temporal-polyfill`**。
+ * - 落点是 `temporal-polyfill/implementation`（**不是包根**，理由见 `TEMPORAL_SPECIFIER`）；
+ * - 不读原生 `globalThis.Temporal`：原生实现只在较新的 Node 上存在，
+ *   且边界行为与 polyfill 不保证逐字一致；本包要求**同一表达式在任何
+ *   受支持的 Node（≥22.12）上得到同一个结果**，故以 polyfill 为唯一实现源。
+ *   （这与 NFR-F10「特性检测」的分工不同：检测的是"依赖是否装好"，不是"运行时有没有原生"。）
+ * - 仍是**动态 import**：核心档（`.` / `./unary-tests`）绝不静态引用本档与 polyfill，
+ *   由 `check:deps` 沿 import 递归兜底（NFR-F12 保留的那半条）。
+ * - 未安装 → 抛 `FEEL_ENV_TEMPORAL_MISSING`（不裸抛 `ERR_MODULE_NOT_FOUND`，AGENTS.md §5）。
  */
 
 import { BUILTINS, registerBuiltin } from '../builtins/registry.js';
@@ -21,34 +26,89 @@ import {
   type Value,
 } from '../core/types.js';
 import { feelTypeName, toStr } from '../core/values.js';
-import { argTypeError, durationComponentError } from '../core/errors.js';
+import {
+  FEEL_ERROR_CODES,
+  FeelEnvError,
+  argTypeError,
+  durationComponentError,
+} from '../core/errors.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-/** Temporal 命名空间（原生或 polyfill），结构随实现而定，故用宽松类型 */
+/** Temporal 命名空间（polyfill 导出），结构随实现而定，故用宽松类型 */
 export type TemporalNS = any;
 
 const EMPTY = new FeelContext();
 
+/**
+ * 唯一实现源。
+ *
+ * ⚠️ 必须是 **`./implementation` 子路径，不能用包根**：`temporal-polyfill` 的包根
+ * （`index.js`）第一行就是 `const Temporal = NativeTemporal || PolyfillTemporal` ——
+ * 在带原生 `Temporal` 的新 Node 上会**静默切到原生实现**，正是我们要消除的
+ * 版本相关行为（同一表达式在 Node 22 与 Node 26 上结果可能不同）。
+ * `./implementation.js` 无条件 re-export polyfill 实现（并加载 full 日历集），
+ * 这才是"统一使用这个库"的准确落点。
+ *
+ * 该子路径自 `temporal-polyfill@1.0.5` 起提供，故 peer 下限即 1.0.5。
+ *
+ * ⚠️ 改回包根**不会**让任何测试变红（Node 22 下两者等价），只会在 Node 26 上悄悄换实现 ——
+ * 故 `check:deps` 额外断言本档可达图必须含 `temporal-polyfill/implementation` 且不得
+ * 出现 `globalThis.Temporal`。
+ */
+const TEMPORAL_SPECIFIER = 'temporal-polyfill/implementation';
+
+/**
+ * 实现源缺失 / 导出面不对（`FEEL_ENV_TEMPORAL_MISSING`）。
+ *
+ * 为什么这条**文案**（而不是契约）住在这个域里：`core` 只认"某个延迟能力档"这层抽象，
+ * 不点名第三方包 —— 指名道姓说"装哪个包、怎么装"属本域知识。附带好处是 core 产物里
+ * 不出现包名，`check:deps` 得以用文本守住"core 不触及 temporal"。
+ */
+export function temporalMissingError(cause?: unknown): FeelEnvError {
+  const details: Record<string, unknown> = {
+    dependency: 'temporal-polyfill',
+    subpath: 'floken-feel/temporal',
+  };
+  if (cause !== undefined) details.cause = String(cause);
+  return new FeelEnvError(
+    "Temporal support requires the 'temporal-polyfill' package but it could not be loaded",
+    {
+      code: FEEL_ERROR_CODES.ENV_TEMPORAL_MISSING,
+      hint: 'npm install temporal-polyfill（./temporal 档统一以 polyfill 为时间实现源）',
+      details,
+    },
+  );
+}
+
 let loaded: TemporalNS | null = null;
 
-/** 确保 Temporal 可用。应在调用时间函数前 await 一次（Node 22 / 浏览器场景）。 */
-export async function ensureTemporal(): Promise<TemporalNS | null> {
-  const g = globalThis as { Temporal?: TemporalNS };
-  if (typeof g.Temporal !== 'undefined') {
-    loaded = g.Temporal;
-    return loaded;
-  }
+/**
+ * 确保时间实现可用。应在调用时间函数前 await 一次
+ * （`floken-feel/temporal` 入口已在模块顶层 await 过，走公开入口的宿主无需自己调）。
+ *
+ * @throws FeelEnvError `FEEL_ENV_TEMPORAL_MISSING` —— 依赖没装。
+ */
+export async function ensureTemporal(): Promise<TemporalNS> {
   if (loaded) return loaded;
-  const specifier = 'temporal-polyfill';
-  const mod: any = await import(specifier);
-  loaded = (mod?.Temporal ?? mod) as TemporalNS;
+  let mod: { Temporal?: TemporalNS } | null = null;
+  try {
+    mod = (await import(TEMPORAL_SPECIFIER)) as { Temporal?: TemporalNS };
+  } catch (cause) {
+    throw temporalMissingError(cause);
+  }
+  const ns = mod?.Temporal;
+  // 装了但导出面不对（版本过旧 / 被打包器改写过）也算环境不满足，不能等到调用点才炸
+  if (!ns || typeof ns.PlainDate?.from !== 'function') throw temporalMissingError();
+  loaded = ns;
   return loaded;
 }
 
-/** 同步取 Temporal（未加载则返回 null） */
+/**
+ * 同步取时间实现（未加载返回 `null`）。
+ *
+ * ⚠️ 只认 `ensureTemporal()` 装载的那一份 —— **不读 `globalThis.Temporal`**（ADR Q32）。
+ */
 export function getTemporal(): TemporalNS | null {
-  const g = globalThis as { Temporal?: TemporalNS };
-  if (typeof g.Temporal !== 'undefined') return g.Temporal;
   return loaded;
 }
 
@@ -62,23 +122,22 @@ function isoOf(obj: unknown): string {
 
 /**
  * FEEL 类型名（比 `kind` 细一档，见 `FeelTemporal.category`）。
- * duration 分成**两个** FEEL 类型，判据同 `durationKindOf`：规范串里出现 `D`/`T` 分量即为 days-and-time。
+ * duration 分成**两个** FEEL 类型，判据取**规范文本**：出现 `D`/`T` 分量即为 days-and-time。
  */
-function categoryOf(kind: FeelTemporal['kind'], obj: unknown, src: string | undefined, base: string): string {
+function categoryOf(kind: FeelTemporal['kind'], text: string): string {
   if (kind === 'dateTime') return 'date and time';
   if (kind !== 'duration') return kind;
-  const body = (src ?? base).replace(/^[-+]?P/, '');
-  return /[DT]/.test(body) ? 'days and time duration' : 'years and months duration';
+  return /[DT]/.test(text.replace(/^[-+]?P/, '')) ? 'days and time duration' : 'years and months duration';
 }
 
 /**
  * 同类可比较 duration 的**数值量**：years-and-months 记月数、days-and-time 记秒数。
  * `orderOf` 与 `categoryOf` 必须同源判定，否则会出现"同类却无数值"的空档。
  */
-function orderOf(kind: FeelTemporal['kind'], obj: unknown, src: string | undefined, base: string): number | undefined {
+function orderOf(kind: FeelTemporal['kind'], obj: unknown, text: string): number | undefined {
   if (kind !== 'duration') return undefined;
   const raw = obj as Record<string, number> | null;
-  if (categoryOf(kind, obj, src, base) === 'days and time duration') {
+  if (categoryOf(kind, text) === 'days and time duration') {
     return (
       (raw?.days ?? 0) * 86400 +
       (raw?.hours ?? 0) * 3600 +
@@ -92,31 +151,91 @@ function orderOf(kind: FeelTemporal['kind'], obj: unknown, src: string | undefin
   return (raw?.years ?? 0) * 12 + (raw?.months ?? 0);
 }
 
-function wrap(kind: FeelTemporal['kind'], obj: unknown, src?: string): FeelTemporal {
-  const iso = isoOf(obj);
+/** 时区/偏移标注（FEEL 形式）：`@Zone` 或 `±HH:MM[:SS]`，二者互斥 */
+interface ZoneInfo {
+  offset: string | null;
+  zone: string | null;
+}
+
+const NO_ZONE: ZoneInfo = { offset: null, zone: null };
+
+/** 从 FEEL 文本尾部取时区/偏移标注 */
+function parseZone(text: string | undefined): ZoneInfo {
+  if (!text) return NO_ZONE;
+  const at = text.indexOf('@');
+  if (at > 0) return { offset: null, zone: text.slice(at + 1) };
+  const m = /([+-])(\d{2}):?(\d{2})(?::(\d{2}))?$/.exec(text);
+  if (m) return { offset: `${m[1]}${m[2]}:${m[3]}${m[4] ? `:${m[4]}` : ''}`, zone: null };
+  if (/Z$/i.test(text)) return { offset: '+00:00', zone: null };
+  return NO_ZONE;
+}
+
+/** FEEL 的时区后缀：零偏移一律写 `Z`（`+00:00` / `-00:00` 都要归一），时区名写 `@Zone` */
+function zoneSuffix(z: ZoneInfo): string {
+  if (z.zone) return `@${z.zone}`;
+  if (!z.offset) return '';
+  return /^[+-]00:00(?::00)?$/.test(z.offset) ? 'Z' : z.offset;
+}
+
+/** 扩年去零：`+999999999-12-31` → `999999999-12-31`、`-002017-12-31` → `-2017-12-31`（`0000-…` 保持四位） */
+function normalizeYearText(text: string): string {
+  const m = /^([+-]?)(0*)(\d+)-/.exec(text);
+  if (!m) return text;
+  const sign = m[1] ?? '';
+  const digits = `${m[2] ?? ''}${m[3] ?? ''}`;
+  if (sign !== '-' && digits.length <= 4) return text;
+  return `${sign}${digits.replace(/^0+(?=\d)/, '')}-${text.slice(m[0].length)}`;
+}
+
+/**
+ * **FEEL 规范文本** —— `FeelTemporal.iso` 的真正口径。
+ *
+ * Temporal 的 `toString()` 有两处与 FEEL 不同，都要换掉：
+ * 1. 年份用扩年（`+275760-…` / `-002017-…`），FEEL 写作 `275760-…` / `-2017-…`；
+ * 2. 带时区值的写法是 `…+01:00[Europe/Paris]`，FEEL 写作 `…@Europe/Paris`；
+ *    而 Plain* 值会**丢掉**偏移，得从原文/显式标注补回（零偏移归一到 `Z`）。
+ *
+ * 之所以让 `iso` 扛这个口径：它是宿主机与跑分器唯一看到的"值文本"，
+ * TCK 的期望值就是按 FEEL 规范文本写的（1115/1116/1117/0079 共 100+ 条）。
+ */
+function feelTextOf(kind: FeelTemporal['kind'], obj: unknown, zone: ZoneInfo): string {
+  const base = isoOf(obj);
+  if (kind === 'duration') return base; // 已由 normalizeDuration 输出 FEEL 形式
+  if (kind === 'date') return normalizeYearText(base);
+  if (kind === 'time') return normalizeYearText(base) + zoneSuffix(zone);
+  const zoned = /\[([^\]]+)\]$/.exec(base);
+  if (zoned) return `${normalizeYearText(base.slice(0, base.lastIndexOf('[')))}@${zoned[1]}`;
+  return normalizeYearText(base) + zoneSuffix(zone);
+}
+
+/**
+ * 造时间值。
+ *
+ * `zone` 可显式传（由分量构造偏移时无从解析原文），否则从 `src` 里解析。
+ * `src` 只作**回溯用**留档：语义（相等、比较、文本、`.time offset`）一律以 `iso` 为准。
+ */
+function wrap(kind: FeelTemporal['kind'], obj: unknown, src?: string, zone?: ZoneInfo): FeelTemporal {
+  const z = zone ?? parseZone(src);
+  const iso = feelTextOf(kind, obj, z);
   const base: FeelTemporal = {
     __feelTemporal: true,
     kind,
     iso,
     raw: obj,
-    eqKey: eqKeyOf(kind, obj, src, iso),
-    category: categoryOf(kind, obj, src, iso),
+    eqKey: eqKeyOf(kind, obj, z, iso),
+    category: categoryOf(kind, iso),
   };
   // 可选字段按需挂（`exactOptionalPropertyTypes` 下不能显式写 undefined）
-  const order = orderOf(kind, obj, src, iso);
+  const order = orderOf(kind, obj, iso);
   const withOrder: FeelTemporal = order === undefined ? base : { ...base, order };
   return src === undefined ? withOrder : { ...withOrder, src };
 }
 
-/** 从原始串取「UTC 偏移 / 时区名」标记；`Z` 与 `+00:00` 归一，`+0500` 补冒号；无则空串 */
-function zoneToken(src: string | undefined): string {
-  if (!src) return '';
-  const at = src.indexOf('@');
-  if (at > 0) return `zone:${src.slice(at + 1)}`;
-  const m = /([+-]\d{2}:?\d{2}|Z)$/.exec(src);
-  if (!m) return '';
-  if (m[0] === 'Z') return 'offset:+00:00';
-  return `offset:${m[0].replace(/^([+-]\d{2})(\d{2})$/, '$1:$2')}`;
+/** 相等键里的时区标记：`Z` 与 `+00:00` 归一，`+0500` 补冒号；无则空串 */
+function zoneToken(z: ZoneInfo): string {
+  if (z.zone) return `zone:${z.zone}`;
+  if (!z.offset) return '';
+  return /^[+-]00:00(?::00)?$/.test(z.offset) ? 'offset:+00:00' : `offset:${z.offset}`;
 }
 
 /**
@@ -130,12 +249,12 @@ function zoneToken(src: string | undefined): string {
 function eqKeyOf(
   kind: FeelTemporal['kind'],
   obj: unknown,
-  src: string | undefined,
+  zone: ZoneInfo,
   base: string,
 ): string {
   const raw = obj as Record<string, number> | null;
   if (kind === 'duration') {
-    const body = (src ?? base).replace(/^[-+]?P/, '');
+    const body = base.replace(/^[-+]?P/, '');
     if (/[DT]/.test(body)) {
       const seconds =
         (raw?.days ?? 0) * 86400 +
@@ -149,7 +268,7 @@ function eqKeyOf(
     }
     return `duration-ym|${(raw?.years ?? 0) * 12 + (raw?.months ?? 0)}mo`;
   }
-  return `${kind}|${base}|${zoneToken(src)}`;
+  return `${kind}|${base}|${zoneToken(zone)}`;
 }
 
 function temporalArg(v: Value): any | null {
@@ -211,8 +330,12 @@ function normalizeDuration(
   const isYm = !/[DT]/.test(body);
 
   let fields: Record<string, number>;
+  let zeroText: string | null = null;
   if (isYm) {
     const totalMonths = abs('years') * 12n + abs('months');
+    // `Temporal.Duration.from({years:0,months:0}).toString()` 退化成 `PT0S`（变成另一个 FEEL 类型了），
+    // 而 `years and months duration` 的零值按 FEEL 写作 `P0M`（TCK 1121#013）—— 故手工写死。
+    if (totalMonths === 0n) zeroText = 'P0M';
     fields = { years: Number((totalMonths / 12n) * BigInt(sign)), months: Number((totalMonths % 12n) * BigInt(sign)) };
   } else {
     const NS = 1_000_000_000n;
@@ -247,7 +370,7 @@ function normalizeDuration(
     };
   }
   const d = T.Duration.from(fields);
-  return { obj: d, text: isoOf(d) };
+  return { obj: d, text: zeroText ?? isoOf(d) };
 }
 
 /**
@@ -405,12 +528,10 @@ function timeOffsetOf(v: Value): Value {
   return construct('duration', 'Duration')([`${m[1] === '-' ? '-' : ''}${text}`], EMPTY);
 }
 
-/** `.timezone` → 时区名；无时区 → null */
+/** `.timezone` → 时区名；无时区 → null。读 `iso`（规范文本）而不是 `src` —— 分量构造的值没有原文 */
 function timezoneOf(v: Value): Value {
   if (!isTemporal(v)) return null;
-  const src = v.src ?? '';
-  const at = src.indexOf('@');
-  return at > 0 ? src.slice(at + 1) : null;
+  return parseZone(v.iso).zone;
 }
 
 /**
@@ -572,7 +693,7 @@ export function withTemporal(): Record<string, NativeFn> {
   return { ...BUILTINS, ...TEMPORAL_BUILTINS };
 }
 
-/** 带时间函数求值（未 ensureTemporal 时时间函数返回 null） */
+/** 带时间函数求值。走公开入口时 Temporal 必已加载（入口顶层 await 过） */
 export function evaluateTemporal(
   src: string,
   context?: unknown,

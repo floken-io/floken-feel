@@ -3,7 +3,8 @@
  *
  * 设计要点：
  * 1. 公开 API 形态对标 feelin（{ value, warnings }），但实现完全自研（Q9：feelin 源码只读不拷）。
- * 2. 核心（`.` / `./unary-tests`）**不静态 import temporal-polyfill**（NFR-F12）。
+ * 2. 核心（`.` / `./unary-tests`）**不静态引用时间实现源**（NFR-F12；
+ *    具体是哪个包属 `src/temporal/` 的域知识，core 不点名，`check:deps` 用文本守这条线）。
  *    时间值以结构化 FeelTemporal 存在，核心只按 `iso` 比较，不感知其底层实现。
  */
 

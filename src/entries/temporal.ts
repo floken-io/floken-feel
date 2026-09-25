@@ -4,8 +4,13 @@
  * 时间类的实现住在 `src/temporal/`，本档只做汇总再导出。
  * 唯一允许接触 `temporal-polyfill` 的子路径（动态 import，Q9 / NFR-F12）。
  *
+ * ★ 时间实现源 = `temporal-polyfill`，**统一使用，不读原生 `globalThis.Temporal`**
+ *   （ADR Q32：跨 Node 版本行为一致优先于"少一个依赖"）。
+ *   因此 `temporal-polyfill` 对本档是**必需依赖**，缺失时本档 import 即抛
+ *   `FEEL_ENV_TEMPORAL_MISSING`（而核心 `.` / `./unary-tests` 依旧零 temporal 依赖）。
+ *
  * ★ 本档是**唯一的带副作用档**：import 时自动完成两件事 ——
- *   ① `await ensureTemporal()`：取原生 `Temporal`，Node 22 下动态加载 polyfill；
+ *   ① `await ensureTemporal()`：动态加载并缓存 `temporal-polyfill`；
  *   ② `registerTemporalBuiltins()`：把时间函数注册进全局内置表。
  *
  * 这样 `evaluate('date("2020-01-01")')` 无需任何额外调用即可工作，

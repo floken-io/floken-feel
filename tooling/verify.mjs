@@ -216,6 +216,23 @@ if (existsSync(dist)) {
       ok('check:deps', `${entry} 及其依赖图无 temporal 引用`);
     }
   }
+
+  // 4b. 时间实现源必须钉死在 `temporal-polyfill/implementation`（ADR Q32）。
+  //     为什么值得设闸：`temporal-polyfill` 的**包根**第一行是
+  //     `const Temporal = NativeTemporal || PolyfillTemporal` —— 在带原生 `Temporal`
+  //     的新 Node 上会静默切到原生实现。改回包根不会有任何测试变红（Node 22 下两者等价），
+  //     只会在 Node 26 上让同一条表达式的行为悄悄变掉。这类"静默退化"只能靠闸门挡。
+  const temporalEntry = join(dist, 'temporal.js');
+  if (existsSync(temporalEntry)) {
+    const txt = reachable(temporalEntry);
+    if (!txt.includes('temporal-polyfill/implementation')) {
+      bad('check:deps', 'temporal.js 未引用 temporal-polyfill/implementation（实现源可能被改回包根）');
+    } else if (/globalThis\s*\.\s*Temporal/.test(txt)) {
+      bad('check:deps', 'temporal.js 出现 globalThis.Temporal 读取（ADR Q32：不得使用原生实现）');
+    } else {
+      ok('check:deps', 'temporal.js 实现源 = temporal-polyfill/implementation，无原生 Temporal 读取');
+    }
+  }
 } else {
   console.log('\u00b7 check:deps \u2014 跳过（dist 尚未构建）');
 }

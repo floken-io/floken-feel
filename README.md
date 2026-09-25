@@ -123,7 +123,7 @@ evaluate('now()', ctx, {
 | 语法错误 | 容错恢复 | 抛 `FeelSyntaxError`（另有 `diagnose()` / `parseWithDiagnostics()` 走不抛路径） |
 | 结果壳 | `{ value, warnings }` | **同样**（保留兼容） |
 | 诊断元素 | `{ message, type, position }` | `Diagnostic`：`{ severity, code, message, start, end, expected?, suggestions? }`（= `05-feel` §6 + `severity`） |
-| 时间函数 | 主入口内置 | 放在 `./temporal`（NFR-F12 隔离）；**import 即注册** —— 未加载时调用抛「带可执行修复提示」的错误 |
+| 时间函数 | 主入口内置 | 放在 `./temporal`（NFR-F12 隔离，**必需依赖 `temporal-polyfill`**）；**import 即注册** —— 未加载时调用抛「带可执行修复提示」的错误 |
 | 带空格内置名 | 上下文相关解析 | 标准名 **+ camelCase 别名** 双注册；名字合并规则与高亮共用 |
 | 自定义内置函数 | — | `registerBuiltin(name, fn)` |
 | 求值选项 | 无 | `clock` / `allowedFunctions` / `maxNodes` / `maxDepth` / `timeoutMs` / `strictCoercion` |
@@ -254,12 +254,38 @@ evaluate('true or null').value;  // true
 
 ## 6. 时间档（`./temporal`）
 
-核心档**不静态引用** `temporal-polyfill`（NFR-F12，由 `check:deps` 兜底）。
+核心档**不静态引用**时间实现源（NFR-F12，由 `check:deps` 沿 import 递归兜底）。
 时间值以 `FeelTemporal` 结构化表示，核心只按 `iso` 比较。
+
+### 6.1 实现源：统一 `temporal-polyfill`（ADR Q32）
+
+**使用本档必须安装 `temporal-polyfill`（≥ 1.0.5），与 Node 版本无关。**
+
+```bash
+npm install temporal-polyfill
+```
+
+> 依赖形态：`peerDependencies` + `optional: true` —— **核心档（`.` / `./unary-tests`）不需要它**，
+> 故不强制所有用户安装；但**一旦用 `./temporal`，它就是硬需求**（缺失即抛 `FEEL_ENV_TEMPORAL_MISSING`）。
+
+| 口径 | 说明 |
+|---|---|
+| 实现源 | **`temporal-polyfill/implementation`**（无条件导出 polyfill 实现） |
+| **不用** 原生 | **不读 `globalThis.Temporal`** —— 原生只在较新 Node 上存在，且边界行为与 polyfill 不保证逐字一致 |
+| 理由 | **同一表达式在任何受支持的 Node（≥22.12）上必须得到同一结果**；对一个以 TCK 逐条断言为闸门的包，可复现性优先于"少一个依赖" |
+| 缺失时 | 抛 `FEEL_ENV_TEMPORAL_MISSING`（`FeelEnvError`，带 `hint` = 上面的安装命令）—— 不是裸的 `ERR_MODULE_NOT_FOUND` |
+
+> ⚠️ **为什么不能写 `import 'temporal-polyfill'`（包根）**：包根第一行就是
+> `const Temporal = NativeTemporal || PolyfillTemporal`（`chunks/root.js` = `globalThis.Temporal`）——
+> **连 polyfill 自己都在优先原生**，"装 polyfill"并不等于"用 polyfill"。
+> 改回包根**不会让任何测试变红**（Node 22 下两者等价），只会在 Node 26 上悄悄换实现，
+> 故由 `check:deps` 断言产物里出现的必须是 `temporal-polyfill/implementation`、且不得出现 `globalThis.Temporal`。
+
+### 6.2 用法
 
 ```ts
 // ★ import 即注册：本档是该包**唯一的副作用档**，import 时自动完成
-//   「取 Temporal（Node 26 原生 / Node 22 动态加载 polyfill）+ 注册时间函数」。
+//   「动态加载 temporal-polyfill/implementation + 注册时间函数」。
 import 'floken-feel/temporal';
 import { evaluate } from 'floken-feel';
 
@@ -272,7 +298,8 @@ evaluate('@"2020-01-01" = date("2020-01-01")').value;  // true（@ 字面量同�
   照着做**即可解决**。这条契约由 `test/cold-start.test.ts` 在**独立进程**里验证
   （注册是全局且不可逆的，同进程里复现不出"未加载"）。
 - 也可用不依赖全局注册的显式 API：`evaluateTemporal(src, ctx?, options?)`。
-- `ensureTemporal()`：Node ≥26 直接用原生 `Temporal`，否则动态加载 polyfill。
+- `ensureTemporal()`：加载并缓存 polyfill 实现（返回 `Promise<TemporalNS>`；依赖缺失时抛错）。
+- `getTemporal()`：同步取**已加载**的实现（未加载返回 `null`；**不会**去读 `globalThis.Temporal`）。
 
 提供：`now` `today` `date` `time` `date and time` `duration`
 `years and months duration` `year` `month` `day` `hour` `minute` `second` `weekday`。
@@ -406,6 +433,7 @@ pnpm verify   # 六道通用门禁 + 第七道 check:tck-isolation
 
 - **纯自研零依赖**：不引入 lezer-feel，词法/语法分析器全部自研；
   feelin 源码只读不拷（Q9）。
-- **禁止自研日期库**（NFR-F11）：时态只来自 `Temporal`（原生或 polyfill）。
-- core/unary-tests **不得**静态引用 `temporal`（NFR-F12，`check:deps` 兜底）。
+- **禁止自研日期库**（NFR-F11）：时态只来自 `temporal-polyfill/implementation`（ADR Q32，**不读原生 `Temporal`**）。
+- core/unary-tests **不得**静态引用时间实现源（NFR-F12，`check:deps` 递归兜底）；
+  且 `check:deps` 会断言 temporal 产物里出现的是 `temporal-polyfill/implementation`、没有 `globalThis.Temporal`。
 - TCK 语料可本地/CI 跑，但**不得**随包分发（NFR-F14，`check:tck-isolation` 兜底）。
