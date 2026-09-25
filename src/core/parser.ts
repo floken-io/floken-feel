@@ -1,0 +1,585 @@
+/**
+ * floken-feel · 语法分析器（递归下降，零依赖）
+ *
+ * 支持：字面量 / 算术 / 比较 / 与或非 / 列表 / 区间 / 上下文 / 函数调用 /
+ *      路径访问 / if-then-else / for-in-return / every|some-in-satisfies /
+ *      `in` / `between` / `instance of` / 函数字面量 /
+ *      unary tests（`?` 占位符、区间测试、列表测试、`not(...)`）
+ *
+ * 带空格的变量名与多词内置名在**词法之后、语法之前**统一合并
+ * （`core/name-merge.ts`，与高亮共用同一规则）。
+ *
+ * 错误一律走 `core/errors.ts` 的工厂：带稳定 `code` + `position`，
+ * 期望类错误另带 `details.expected`，供编辑器给出"这里可能漏了一个 `)`"。
+ */
+
+import {
+  type ArithOp,
+  type CompareOp,
+  type Node,
+  type Value,
+} from './types.js';
+import { FEEL_ERROR_CODES, expectedTokenError, syntaxError } from './errors.js';
+import { tokenize, type Token } from './lexer.js';
+import { mergeNames } from './name-merge.js';
+import { SPACED_NAMES } from './spaced-names.js';
+
+const CMP_OPS = new Set(['=', '!=', '<', '<=', '>', '>=']);
+
+/** `instance of` 右侧允许的 FEEL 类型名 */
+export const INSTANCE_TYPES: ReadonlySet<string> = new Set([
+  'any',
+  'boolean',
+  'number',
+  'string',
+  'date',
+  'time',
+  'date and time',
+  'dateTime',
+  'duration',
+  'years and months duration',
+  'list',
+  'context',
+  'range',
+  'function',
+]);
+
+export interface ParseOptions {
+  /** 覆盖「需合并的多词名」表（默认取 `core/spaced-names` 的全局表） */
+  spacedNames?: ReadonlySet<string>;
+}
+
+class Parser {
+  private pos = 0;
+  /** >0 表示正在解析区间内部：此时 `[` 属于区间闭合符，不能被当作列表下标 */
+  private rangeDepth = 0;
+
+  constructor(
+    private readonly tokens: Token[],
+    private readonly src: string,
+  ) {}
+
+  // ---------- token 工具 ----------
+
+  private cur(): Token {
+    const t = this.tokens[this.pos];
+    return t ?? { type: 'eof', value: '', start: this.src.length, end: this.src.length };
+  }
+
+  private advance(): Token {
+    const t = this.cur();
+    this.pos += 1;
+    return t;
+  }
+
+  private at(type: TokenTypeUnion, value?: string): boolean {
+    const t = this.cur();
+    return t.type === type && (value === undefined || t.value === value);
+  }
+
+  private eat(type: TokenTypeUnion, value?: string): boolean {
+    if (this.at(type, value)) {
+      this.pos += 1;
+      return true;
+    }
+    return false;
+  }
+
+  private expect(type: TokenTypeUnion, value?: string): Token {
+    if (!this.at(type, value)) {
+      const t = this.cur();
+      throw expectedTokenError(value ?? type, t.value, { from: t.start, to: t.end });
+    }
+    return this.advance();
+  }
+
+  private expectName(): Token {
+    const t = this.cur();
+    if (t.type === 'name' || (t.type === 'kw' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(t.value))) {
+      this.pos += 1;
+      return t;
+    }
+    throw syntaxError(
+      `Expected a name but found '${t.value || 'EOF'}'`,
+      { from: t.start, to: t.end },
+      { code: FEEL_ERROR_CODES.SYNTAX_EXPECTED_NAME, details: { found: t.value } },
+    );
+  }
+
+  /** 此处不允许出现的 token（带 expected 便于诊断） */
+  private unexpected(): never {
+    const t = this.cur();
+    throw syntaxError(`Unexpected token '${t.value || 'EOF'}'`, { from: t.start, to: t.end }, {
+      code: FEEL_ERROR_CODES.SYNTAX_UNEXPECTED_TOKEN,
+      details: { found: t.value || 'EOF' },
+    });
+  }
+
+  // ---------- 入口 ----------
+
+  parse(): Node {
+    const node = this.parseExpression();
+    if (!this.at('eof')) this.unexpected();
+    return node;
+  }
+
+  /** 解析 unary tests：逗号分隔的若干测试项，项间为 OR 语义 */
+  parseTests(): Node[] {
+    const tests: Node[] = [];
+    do {
+      tests.push(this.parseUnaryTest());
+    } while (this.eat('comma'));
+    if (!this.at('eof')) this.unexpected();
+    return tests;
+  }
+
+  // ---------- 表达式层级 ----------
+
+  private parseExpression(): Node {
+    return this.parseLogical();
+  }
+
+  private parseLogical(): Node {
+    let left = this.parseComparison();
+    while (this.at('kw', 'and') || this.at('kw', 'or')) {
+      const op = this.advance().value as 'and' | 'or';
+      const right = this.parseComparison();
+      left = { type: 'logical', op, left, right, start: left.start, end: right.end };
+    }
+    return left;
+  }
+
+  private parseComparison(): Node {
+    let left = this.parseAdditive();
+    for (;;) {
+      // 比较运算符
+      if (this.at('op') && CMP_OPS.has(this.cur().value)) {
+        const opTok = this.advance();
+        const right = this.parseAdditive();
+        left = {
+          type: 'compare',
+          op: opTok.value as CompareOp,
+          left,
+          right,
+          start: left.start,
+          end: right.end,
+        };
+        continue;
+      }
+      // `x in <区间|列表|上下文>`（成员判定）
+      if (this.at('kw', 'in')) {
+        this.advance();
+        const domain = this.parseAdditive();
+        left = { type: 'in', value: left, domain, start: left.start, end: domain.end };
+        continue;
+      }
+      // `x between low and high`
+      if (this.at('kw', 'between')) {
+        this.advance();
+        const low = this.parseAdditive();
+        this.expect('kw', 'and');
+        const high = this.parseAdditive();
+        left = { type: 'between', value: left, low, high, start: left.start, end: high.end };
+        continue;
+      }
+      // `x instance of <类型名>`
+      if (this.at('kw', 'instance')) {
+        const instTok = this.advance();
+        this.expect('kw', 'of');
+        const typeTok = this.cur();
+        if (typeTok.type === 'name' && INSTANCE_TYPES.has(typeTok.value)) {
+          this.advance();
+          left = {
+            type: 'instance',
+            value: left,
+            typeName: typeTok.value,
+            start: left.start,
+            end: typeTok.end,
+          };
+          continue;
+        }
+        throw syntaxError(
+          `Expected a FEEL type name after 'instance of' but found '${typeTok.value || 'EOF'}'`,
+          { from: instTok.start, to: typeTok.end },
+          {
+            code: FEEL_ERROR_CODES.SYNTAX_INSTANCE_OF_TYPE,
+            details: { found: typeTok.value || 'EOF', allowed: [...INSTANCE_TYPES] },
+          },
+        );
+      }
+      return left;
+    }
+  }
+
+  private parseAdditive(): Node {
+    let left = this.parseMultiplicative();
+    while (this.at('op', '+') || this.at('op', '-')) {
+      const opTok = this.advance();
+      const right = this.parseMultiplicative();
+      left = {
+        type: 'binary',
+        op: opTok.value as ArithOp,
+        left,
+        right,
+        start: left.start,
+        end: right.end,
+      };
+    }
+    return left;
+  }
+
+  private parseMultiplicative(): Node {
+    let left = this.parseUnary();
+    while (this.at('op', '*') || this.at('op', '/') || this.at('op', '**')) {
+      const opTok = this.advance();
+      const right = this.parseUnary();
+      const op = opTok.value === '**' ? '**' : (opTok.value as ArithOp);
+      left = { type: 'binary', op, left, right, start: left.start, end: right.end };
+    }
+    return left;
+  }
+
+  private parseUnary(): Node {
+    if (this.at('op', '-')) {
+      const t = this.advance();
+      const operand = this.parseUnary();
+      return { type: 'unary', op: '-', operand, start: t.start, end: operand.end };
+    }
+    return this.parsePostfix();
+  }
+
+  /** 后缀：`.name` 路径 与 `(...)` 调用，可交错 */
+  private parsePostfix(): Node {
+    let base = this.parsePrimary();
+    for (;;) {
+      if (this.at('dot')) {
+        this.advance();
+        const nameTok = this.expectName();
+        base = { type: 'path', base, name: nameTok.value, start: base.start, end: nameTok.end };
+        continue;
+      }
+      if (this.at('lparen')) {
+        this.advance();
+        const args = this.parseArgs();
+        const close = this.expect('rparen');
+        base = { type: 'call', callee: base, args, start: base.start, end: close.end };
+        continue;
+      }
+      // `list[x]`：下标 / 过滤统一（FEEL 方括号语义，运行时定夺）
+      // 区间内部的 `[`（如 `]1..5[`）是闭合符，不是下标
+      if (this.rangeDepth === 0 && this.at('lbracket')) {
+        this.advance();
+        const condition = this.parseExpression();
+        const close = this.expect('rbracket');
+        base = { type: 'filter', base, condition, start: base.start, end: close.end };
+        continue;
+      }
+      return base;
+    }
+  }
+
+  private parseArgs(): Node[] {
+    const args: Node[] = [];
+    if (this.at('rparen')) return args;
+    do {
+      args.push(this.parseExpression());
+    } while (this.eat('comma'));
+    return args;
+  }
+
+  private parsePrimary(): Node {
+    const t = this.cur();
+
+    // `<= 10` / `< 10` / `> 10` / `>= 10` / `= 10`：**unary test 的区间等价**
+    // （FEEL 10.3.2.5：`< a` ≡ `(null..a)`、`>= a` ≡ `[a..null)`、`= a` ≡ `[a..a]`）
+    // 这样 `1 in <= 10` 与 `(<= 10) = (null..10]` 两种写法都能直接求值。
+    // ⚠️ `!= a` 是补集、无单一区间等价形式，故不在此列（由 unary test 通路处理）。
+    if (
+      t.type === 'op' &&
+      (t.value === '<' || t.value === '<=' || t.value === '>' || t.value === '>=' || t.value === '=')
+    ) {
+      this.advance();
+      const rhs = this.parseAdditive();
+      const nullLit: Node = { type: 'lit', value: null, start: t.start, end: t.start };
+      const inclusive = t.value.endsWith('='); // `<=` `>=` `=` → true；`<` `>` → false
+      const start = t.start;
+      const end = rhs.end;
+      // 端点开闭必须与**显式区间写法**逐位一致，否则 `(<= 10) = (null..10]` 判不出真：
+      // `<= a` ≡ `(null..a]`（下界开、无下界故无意义）、`>= a` ≡ `[a..null)`、`= a` ≡ `[a..a]`。
+      if (t.value === '=') {
+        return {
+          type: 'range',
+          from: rhs,
+          to: rhs,
+          fromInclusive: true,
+          toInclusive: true,
+          start,
+          end,
+        };
+      }
+      const isLower = t.value === '>' || t.value === '>=';
+      return {
+        type: 'range',
+        from: isLower ? rhs : nullLit,
+        to: isLower ? nullLit : rhs,
+        fromInclusive: isLower ? inclusive : false,
+        toInclusive: isLower ? false : inclusive,
+        start,
+        end,
+      };
+    }
+
+    if (t.type === 'num') {
+      this.advance();
+      return { type: 'lit', value: Number(t.value) as Value, start: t.start, end: t.end };
+    }
+
+    if (t.type === 'str') {
+      this.advance();
+      return { type: 'lit', value: t.value as Value, start: t.start, end: t.end };
+    }
+
+    // 日期时间字面量 @"…" —— 只收原文，类型分派在 `./temporal` 档
+    if (t.type === 'atstr') {
+      this.advance();
+      return { type: 'at', text: t.value, start: t.start, end: t.end };
+    }
+
+    if (t.type === 'kw' && (t.value === 'true' || t.value === 'false' || t.value === 'null')) {
+      this.advance();
+      const value: Value = t.value === 'true' ? true : t.value === 'false' ? false : null;
+      return { type: 'lit', value, start: t.start, end: t.end };
+    }
+
+    if (t.type === 'kw' && t.value === 'if') {
+      this.advance();
+      const cond = this.parseExpression();
+      this.expect('kw', 'then');
+      const thenNode = this.parseExpression();
+      this.expect('kw', 'else');
+      const elseNode = this.parseExpression();
+      return { type: 'if', cond, then: thenNode, else: elseNode, start: t.start, end: elseNode.end };
+    }
+
+    if (t.type === 'kw' && t.value === 'for') {
+      this.advance();
+      const vars = this.parseIterVars();
+      this.expect('kw', 'return');
+      const body = this.parseExpression();
+      return { type: 'for', vars, body, start: t.start, end: body.end };
+    }
+
+    if (t.type === 'kw' && (t.value === 'every' || t.value === 'some')) {
+      this.advance();
+      const kind = t.value as 'every' | 'some';
+      const vars = this.parseIterVars();
+      this.expect('kw', 'satisfies');
+      const satisfier = this.parseExpression();
+      return { type: 'quantified', kind, vars, satisfier, start: t.start, end: satisfier.end };
+    }
+
+    // 函数字面量 function(a, b) body（闭包捕获定义处上下文）
+    if (t.type === 'kw' && t.value === 'function') {
+      this.advance();
+      this.expect('lparen');
+      const params: string[] = [];
+      if (!this.at('rparen')) {
+        do {
+          params.push(this.expectName().value);
+        } while (this.eat('comma'));
+      }
+      this.expect('rparen');
+      const body = this.parseExpression();
+      return { type: 'function', params, body, start: t.start, end: body.end };
+    }
+
+    // 分组 或 开区间 (a..b) / (a..b]
+    if (t.type === 'lparen') {
+      this.advance();
+      this.rangeDepth += 1;
+      const inner = this.parseExpression();
+      if (this.at('range')) {
+        this.advance();
+        const to = this.parseExpression();
+        const closeTok = this.cur();
+        if (closeTok.type === 'rparen' || closeTok.type === 'rbracket') {
+          this.advance();
+          this.rangeDepth -= 1;
+          return {
+            type: 'range',
+            from: inner,
+            to,
+            fromInclusive: false, // `(` 开头为开区间
+            toInclusive: closeTok.type === 'rbracket',
+            start: t.start,
+            end: closeTok.end,
+          };
+        }
+        this.rangeDepth -= 1;
+        throw syntaxError('Unterminated interval', { from: t.start, to: closeTok.end }, {
+          code: FEEL_ERROR_CODES.SYNTAX_UNTERMINATED_INTERVAL,
+          hint: '区间需用 `)` `]` 收尾，如 `(1..5]`',
+        });
+      }
+      this.expect('rparen');
+      this.rangeDepth -= 1;
+      return inner;
+    }
+
+    // 列表 [a, b] 或 区间 [a..b] / ]a..b[ / [a..b[
+    if (t.type === 'lbracket' || t.type === 'rbracket') {
+      const open = this.advance();
+      const fromInclusive = open.value === '[';
+      this.rangeDepth += 1;
+      // 空列表 `[]`（`]` 只可能是开区间起始符，不能是空列表）
+      if (open.value === '[' && this.at('rbracket')) {
+        const close = this.advance();
+        this.rangeDepth -= 1;
+        return { type: 'list', items: [], start: open.start, end: close.end };
+      }
+      const first = this.parseExpression();
+      if (this.at('range')) {
+        this.advance();
+        const to = this.parseExpression();
+        const closeTok = this.cur();
+        if (
+          closeTok.type === 'rbracket' ||
+          closeTok.type === 'lbracket' ||
+          closeTok.type === 'rparen'
+        ) {
+          this.advance();
+          this.rangeDepth -= 1;
+          return {
+            type: 'range',
+            from: first,
+            to,
+            fromInclusive,
+            toInclusive: closeTok.value === ']',
+            start: open.start,
+            end: closeTok.end,
+          };
+        }
+        this.rangeDepth -= 1;
+        throw syntaxError('Unterminated interval', { from: open.start, to: closeTok.end }, {
+          code: FEEL_ERROR_CODES.SYNTAX_UNTERMINATED_INTERVAL,
+          hint: '区间需用 `]` `[` 收尾，如 `[1..5[`',
+        });
+      }
+      const items = [first];
+      while (this.eat('comma')) items.push(this.parseExpression());
+      const close = this.expect('rbracket');
+      this.rangeDepth -= 1;
+      return { type: 'list', items, start: open.start, end: close.end };
+    }
+
+    // 上下文 { a: 1, "b c": 2, Mike's age: 3 }
+    if (t.type === 'lbrace') {
+      this.advance();
+      const entries: { key: string; value: Node }[] = [];
+      if (!this.at('rbrace')) {
+        do {
+          const keyTok = this.cur();
+          if (keyTok.type === 'str' || keyTok.type === 'name') {
+            this.advance();
+          } else {
+            this.expectName();
+          }
+          const key = keyTok.value;
+          this.expect('colon');
+          const value = this.parseExpression();
+          entries.push({ key, value });
+        } while (this.eat('comma'));
+      }
+      const close = this.expect('rbrace');
+      return { type: 'context', entries, start: t.start, end: close.end };
+    }
+
+    // 名字（带空格的变量名 / 多词内置名已在 token 流合并，见 core/name-merge.ts）
+    if (t.type === 'name' || t.type === 'kw') {
+      this.advance();
+      return { type: 'name', name: t.value, start: t.start, end: t.end };
+    }
+
+    return this.unexpected();
+  }
+
+  private parseIterVars(): { name: string; expr: Node }[] {
+    const vars: { name: string; expr: Node }[] = [];
+    do {
+      const nameTok = this.expectName();
+      this.expect('kw', 'in');
+      const expr = this.parseExpression();
+      vars.push({ name: nameTok.value, expr });
+    } while (this.eat('comma'));
+    return vars;
+  }
+
+  /** 单个 unary test 项 */
+  private parseUnaryTest(): Node {
+    const t = this.cur();
+
+    // not(...) —— 交给通用表达式解析（会形成 call 节点）
+    if (t.type === 'kw' && t.value === 'not') {
+      return this.parseExpression();
+    }
+
+    // `in <区间|列表>` → ? in domain
+    if (t.type === 'kw' && t.value === 'in') {
+      this.advance();
+      const domain = this.parseExpression();
+      const q: Node = { type: 'name', name: '?', start: t.start, end: t.start };
+      return { type: 'in', value: q, domain, start: t.start, end: domain.end };
+    }
+
+    // 以比较运算符开头：< 2 / >= x / != 5  →  ? op rhs
+    if (t.type === 'op' && CMP_OPS.has(t.value)) {
+      this.advance();
+      const op = t.value as CompareOp;
+      const rhs = this.parseExpression();
+      const q: Node = { type: 'name', name: '?', start: t.start, end: t.start };
+      return { type: 'compare', op, left: q, right: rhs, start: t.start, end: rhs.end };
+    }
+
+    // 区间 / 列表：交给 primary（会形成 range 或 list 节点）
+    if (t.type === 'lbracket' || t.type === 'rbracket' || t.type === 'lparen') {
+      return this.parsePrimary();
+    }
+
+    // 其它表达式：若本身已是布尔型结构则原样返回，否则视为 `? = expr`
+    const node = this.parseExpression();
+    if (
+      node.type === 'compare' ||
+      node.type === 'logical' ||
+      node.type === 'call' ||
+      node.type === 'in' ||
+      node.type === 'between' ||
+      node.type === 'instance'
+    ) {
+      return node;
+    }
+    const q: Node = { name: '?', type: 'name', start: node.start, end: node.start };
+    return { type: 'compare', op: '=', left: q, right: node, start: node.start, end: node.end };
+  }
+}
+
+type TokenTypeUnion = Token['type'];
+
+/**
+ * 供语法分析使用的 token 流：
+ * 1. 剔除注释（词法始终产出 `comment` token 供高亮用，语法不关心）；
+ * 2. 合并名字（与高亮共用 `core/name-merge.ts`，保证边界一致）。
+ */
+function significant(src: string, spaced: ReadonlySet<string>): Token[] {
+  const tokens = tokenize(src).filter((t) => t.type !== 'comment');
+  return mergeNames(tokens, spaced);
+}
+
+/** 解析一个完整 FEEL 表达式 */
+export function parseExpression(src: string, opts: ParseOptions = {}): Node {
+  return new Parser(significant(src, opts.spacedNames ?? SPACED_NAMES), src).parse();
+}
+
+/** 解析 unary tests（决策表输入项），返回测试项数组（逗号 = OR） */
+export function parseUnaryTests(src: string, opts: ParseOptions = {}): Node[] {
+  return new Parser(significant(src, opts.spacedNames ?? SPACED_NAMES), src).parseTests();
+}

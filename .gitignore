@@ -1,0 +1,12 @@
+node_modules/
+dist/
+*.tgz
+coverage/
+
+# tsup 生成的临时配置打包产物
+tsup.config.bundled_*.mjs
+.changeset/*.md
+!.changeset/config.json
+
+# TCK 提取产物（由外部语料派生，CC BY-SA 传染 —— 绝不入库）
+tmp/

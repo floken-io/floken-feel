@@ -1,0 +1,43 @@
+{
+  "name": "floken-feel",
+  "version": "0.0.0",
+  "description": "FEEL expression language for JavaScript/TypeScript \u2014 parse, evaluate, diagnose",
+  "type": "module",
+  "sideEffects": [
+    "./dist/temporal.js"
+  ],
+  "engines": { "node": ">=22.12" },
+  "packageManager": "pnpm@12.6.0",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./unary-tests": { "types": "./dist/unary-tests.d.ts", "default": "./dist/unary-tests.js" },
+    "./temporal": { "types": "./dist/temporal.d.ts", "default": "./dist/temporal.js" },
+    "./editor": { "types": "./dist/editor.d.ts", "default": "./dist/editor.js" }
+  },
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
+  "publishConfig": { "access": "public", "provenance": true },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "verify": "node tooling/verify.mjs",
+    "tck:extract": "node tooling/tck/extract.mjs",
+    "tck": "node tooling/tck/run.mjs --json",
+    "tck:baseline": "node tooling/tck/run.mjs --write-baseline",
+    "changeset": "changeset",
+    "release": "pnpm build && pnpm verify && changeset publish",
+    "prepublishOnly": "pnpm build && pnpm verify"
+  },
+  "peerDependencies": { "temporal-polyfill": ">=1.0.5" },
+  "peerDependenciesMeta": { "temporal-polyfill": { "optional": true } },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "temporal-polyfill": "1.0.5",
+    "typescript": "5.9.3",
+    "tsup": "8.5.1",
+    "vitest": "5.0.2",
+    "@changesets/cli": "3.0.3"
+  },
+  "license": "Apache-2.0"
+}
