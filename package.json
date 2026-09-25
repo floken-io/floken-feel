@@ -29,11 +29,11 @@
     "release": "pnpm build && pnpm verify && changeset publish",
     "prepublishOnly": "pnpm build && pnpm verify"
   },
-  "peerDependencies": { "temporal-polyfill": ">=1.0.5" },
-  "peerDependenciesMeta": { "temporal-polyfill": { "optional": true } },
+  "dependencies": {
+    "temporal-polyfill": ">=1.0.5 <2.0.0"
+  },
   "devDependencies": {
     "@types/node": "^22.20.4",
-    "temporal-polyfill": "1.0.5",
     "typescript": "5.9.3",
     "tsup": "8.5.1",
     "vitest": "5.0.2",

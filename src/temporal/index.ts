@@ -17,7 +17,6 @@ import { NUMERIC_BUILTINS } from '../builtins/numeric.js';
 import { requireArity } from '../builtins/helpers.js';
 import { evaluate, type EvaluateOptions } from '../core/evaluator.js';
 import {
-  FeelContext,
   isTemporal,
   type EvalResult,
   type EvalRuntime,
@@ -31,13 +30,12 @@ import {
   FeelEnvError,
   argTypeError,
   durationComponentError,
+  temporalValueError,
 } from '../core/errors.js';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 /** Temporal 命名空间（polyfill 导出），结构随实现而定，故用宽松类型 */
 export type TemporalNS = any;
-
-const EMPTY = new FeelContext();
 
 /**
  * 唯一实现源。
@@ -177,14 +175,23 @@ function zoneSuffix(z: ZoneInfo): string {
   return /^[+-]00:00(?::00)?$/.test(z.offset) ? 'Z' : z.offset;
 }
 
-/** 扩年去零：`+999999999-12-31` → `999999999-12-31`、`-002017-12-31` → `-2017-12-31`（`0000-…` 保持四位） */
+/**
+ * 扩年去零去号：`+099999-12-31` → `99999-12-31`、`-002017-12-31` → `-2017-12-31`。
+ *
+ * Temporal 的 `toString()` 对 5 位以上年份一律写**带符号的 6 位扩年**（`+099999` / `-002017`），
+ * 而 FEEL 照 ISO 8601 写：正年**不带号**、只去前导零（`99999` / `-2017`）。
+ * 4 位年份（含 `0000`）两种写法一致，原样返回。
+ */
 function normalizeYearText(text: string): string {
   const m = /^([+-]?)(0*)(\d+)-/.exec(text);
   if (!m) return text;
   const sign = m[1] ?? '';
   const digits = `${m[2] ?? ''}${m[3] ?? ''}`;
-  if (sign !== '-' && digits.length <= 4) return text;
-  return `${sign}${digits.replace(/^0+(?=\d)/, '')}-${text.slice(m[0].length)}`;
+  const year = digits.replace(/^0+(?=\d)/, '');
+  // 4 位及以内且非负 → 两边写法一致，原样返回
+  if (sign !== '-' && year.length <= 4) return text;
+  const rest = text.slice(m[0].length);
+  return `${sign === '-' ? '-' : ''}${year}-${rest}`;
 }
 
 /**
@@ -204,7 +211,12 @@ function feelTextOf(kind: FeelTemporal['kind'], obj: unknown, zone: ZoneInfo): s
   if (kind === 'date') return normalizeYearText(base);
   if (kind === 'time') return normalizeYearText(base) + zoneSuffix(zone);
   const zoned = /\[([^\]]+)\]$/.exec(base);
-  if (zoned) return `${normalizeYearText(base.slice(0, base.lastIndexOf('[')))}@${zoned[1]}`;
+  if (zoned) {
+    // ZonedDateTime 的写法 `…+01:00[Europe/Paris]` 里那段偏移是 Temporal 的中间产物：
+    // FEEL 只写 `…@Europe/Paris`，故先把 `[` 前的偏移/Z 剥掉（TCK 1117#023~#026 / 0079）。
+    const head = localTimeOf(base.slice(0, base.lastIndexOf('[')));
+    return `${normalizeYearText(head)}@${zoned[1]}`;
+  }
   return normalizeYearText(base) + zoneSuffix(zone);
 }
 
@@ -213,10 +225,19 @@ function feelTextOf(kind: FeelTemporal['kind'], obj: unknown, zone: ZoneInfo): s
  *
  * `zone` 可显式传（由分量构造偏移时无从解析原文），否则从 `src` 里解析。
  * `src` 只作**回溯用**留档：语义（相等、比较、文本、`.time offset`）一律以 `iso` 为准。
+ * `isoText` 用于覆盖由 `obj` 反推的文本 —— 目前只有时长需要：
+ * `years and months duration` 的零值 Temporal 一律 `toString()` 成 `PT0S`，
+ * 而 FEEL 写作 `P0M`（两者是**不同的 FEEL 类型**，TCK 0079#ym_003 / 0103 都要区分）。
  */
-function wrap(kind: FeelTemporal['kind'], obj: unknown, src?: string, zone?: ZoneInfo): FeelTemporal {
+function wrap(
+  kind: FeelTemporal['kind'],
+  obj: unknown,
+  src?: string,
+  zone?: ZoneInfo,
+  isoText?: string,
+): FeelTemporal {
   const z = zone ?? parseZone(src);
-  const iso = feelTextOf(kind, obj, z);
+  const iso = isoText ?? feelTextOf(kind, obj, z);
   const base: FeelTemporal = {
     __feelTemporal: true,
     kind,
@@ -373,67 +394,503 @@ function normalizeDuration(
   return { obj: d, text: zeroText ?? isoOf(d) };
 }
 
+/** Temporal 可表示的年份上限（ISO 8601 扩展年 `±275760`） */
+const YEAR_LIMIT = 275760;
+
+/** FEEL 允许的 UTC 偏移上限（`±18:00`；Temporal 自身放宽到 ±23:59，TCK 1116#067 / 1117#078 要求更严） */
+const OFFSET_LIMIT_HOURS = 18;
+
 /**
- * 把 FEEL 的负年/超长年写法补成 Temporal 认的**扩年**形式（6 位带符号）。
+ * FEEL 年份写法 → Temporal 认的**扩年**（6 位带符号）。
  *
- * FEEL 照 ISO 8601 写作 `-2018-12-06`，但 Temporal 只接受 `-002018-12-06`；
- * 直接喂 `-2018-…` 会抛 "Cannot parse"。原串仍保留在 `src` 里，
- * 供 `string()` 还原 FEEL 写法（TCK 1117 期望 `"-99999-12-31T11:22:33"`，不补零）。
+ * FEEL 照 ISO 8601 写年份：4 位（`2017`）、5–9 位（`99999`，**不许前导零、不许 `+` 号**）、可负（`-2017`）。
+ * Temporal 只认 4 位或 6 位带符号扩年，故 5–9 位要补足 6 位并补 `+`。
+ *
+ * 返回 `'invalid'` = 写法非法（具名构造器抛 `EVAL_TEMPORAL_VALUE`）；
+ * 返回 `'overflow'` = 写法合法但超出实现源可表示范围（给 `null`，登记 `known-gaps`）。
+ *
+ * 四条判据都由 TCK 钉死：`998-12-31`（3 位）/ `01211-12-31`（前导零）/ `9999999999-12-25`（10 位）/
+ * `+2012-12-02`（正号）全 `errorResult`；而 `99999-12-31T11:22:33` 必须解析得出来（1117#011）。
+ *
+ * ⚠️ 注意本函数的正则**只接受可选负号** —— `+2012-…` 因此直接判非法（不进入后面的补位逻辑）。
  */
-function expandYear(text: string): string {
-  const m = /^([+-])(\d{1,5})-/.exec(text);
-  if (!m) return text;
-  return `${m[1]}${(m[2] ?? '').padStart(6, '0')}-${text.slice(m[0].length)}`;
+function convertYear(text: string): string | 'invalid' | 'overflow' {
+  const m = /^(-?)(\d+)-(\d{2})-(\d{2})([\s\S]*)$/.exec(text);
+  if (!m) return 'invalid';
+  const neg = m[1] === '-';
+  const digits = m[2] ?? '';
+  if (digits.length < 4 || digits.length > 9) return 'invalid';
+  if (digits.length > 4 && digits.startsWith('0')) return 'invalid';
+  if (Number(digits) > YEAR_LIMIT) return 'overflow';
+  const tail = `-${m[3]}-${m[4]}${m[5] ?? ''}`;
+  // 负年即使是 4 位也要写扩年：Temporal 的**文本解析**只认 4 位**正**年，
+  // `-2016-01-30` 会直接拒收（`{year:-2016}` 的对象形态才接受）—— 故负年一律补足 6 位。
+  if (digits.length === 4 && !neg) return `${digits}${tail}`;
+  return `${neg ? '-' : '+'}${digits.padStart(6, '0')}${tail}`;
 }
 
 /**
- * 由「清洗后的待解析串 + 原始串」造时间值。
+ * 构造失败时的统一出口。
  *
- * 分开传两个串：解析要用 Temporal 认的形式（扩年、补 `.0`），
- * 而 `src` 要留 FEEL 原文（`string()` 与 `.timezone` 要还原人写的样子）。
+ * `fnName` 非 null（具名构造器 `date()` / `time()` / `date and time()`）→ **抛**：
+ * DMN 1.4 把这些形参定义为有类型，写法不合规就是**类型错误**，
+ * TCK 1115/1116/1117 把每一种坏写法都列成了 `errorResult`。
+ * `fnName` 为 null（`@"…"` 字面量路径）→ 给 `null`：那只是"这段文本不是该类型的字面量"。
  */
-function parseTemporal(kind: FeelTemporal['kind'], ctor: string, text: string, src: string): Value {
+function shapeFail(fnName: string | null, src: string, expected: string): Value {
+  if (fnName === null) return null;
+  throw temporalValueError(fnName, { value: src, expected });
+}
+
+/** 时区名是否真实存在（`Etc/UTC` 通过、`xyz/abc` 抛 —— TCK 1116#066） */
+function zoneExists(zone: string): boolean {
+  const T = getTemporal();
+  if (!T) return false;
+  try {
+    T.ZonedDateTime.from(`2000-01-01T00:00:00[${zone}]`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 偏移写法与范围（`±HH:MM[:SS]`，`|HH| ≤ 18`） */
+function offsetOk(offset: string): boolean {
+  const m = /^([+-])(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(offset);
+  return m !== null && Number(m[2]) <= OFFSET_LIMIT_HOURS;
+}
+
+/** 取必需的分量（必须是范围内的整数），否则抛 `EVAL_TEMPORAL_VALUE` */
+function intComponent(v: Value, fnName: string, name: string, min: number, max: number): number {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) {
+    throw temporalValueError(fnName, {
+      component: `${name} = ${v === null ? 'null' : String(v)}`,
+      expected: 'number',
+    });
+  }
+  return v;
+}
+
+/**
+ * 校验时间文本里的**时分秒范围**（`date and time` 分支用；`time` 分支走 `validTimeText`）。
+ *
+ * 为什么必须自己做：Temporal 把 `23:59:60` 当闰秒**静默规整**成 `23:59:59`，
+ * 而 DMN/TCK 明确要求报错（1116#057）。其余越界（`24:00:01` / `00:60:00`）Temporal 本身会抛，
+ * 但这里统一拦一道，口径才一致 —— 也算"写法层面的规矩由我们守"。
+ */
+function clockOutOfRange(text: string): boolean {
+  const m = /(?:^|T)(\d{2}):(\d{2})(?::(\d{2}))?(?:[.,]\d+)?$/.exec(text);
+  if (!m) return false;
+  const s = m[3] === undefined ? 0 : Number(m[3]);
+  return Number(m[1]) > 23 || Number(m[2]) > 59 || s > 59;
+}
+
+/**
+ * 纯时间文本必须是 FEEL 的**扩展格式** `HH:MM[:SS[.fff]]`。
+ *
+ * Temporal 的解析器还认 ISO 基本格式 —— `time(2017)` 会被它读成 `20:17:00`，
+ * 但 `2017` 在 FEEL 里是个数字、不是时间，TCK 1116#054 判它是 `errorResult`。
+ * 顺带把时分秒越界（`24:00:01` / `23:59:60`）一并判掉。
+ */
+function validTimeText(text: string): boolean {
+  const m = /^(\d{2}):(\d{2})(?::(\d{2})(?:[.,]\d+)?)?$/.exec(text);
+  if (!m) return false;
+  const s = m[3] === undefined ? 0 : Number(m[3]);
+  return Number(m[1]) <= 23 && Number(m[2]) <= 59 && s <= 59;
+}
+
+/**
+ * FEEL 时间文本 → 时间值（所有构造器的**唯一文本入口**）。
+ *
+ * 与 Temporal 的分工：**写法层面的规矩由我们守**（年份位数与符号、偏移上限 `±18:00`、
+ * 偏移与时区名不可并存、时区名必须真实存在、时分秒不得越界），**其余交给 Temporal**
+ * （月/日范围、闰年、格式细节）。如此才分得清"写法非法"（抛）与
+ * "写法合法但实现源不可表示"（给 `null`，登记 `known-gaps`）。
+ *
+ * `fnName` 非 null = 具名构造器调用（失败抛错）；`null` = `@"…"` 字面量（失败给 `null`）。
+ */
+function parseText(kind: FeelTemporal['kind'], raw: string, fnName: string | null): Value {
   const T = getTemporal();
   if (!T) return null;
+  const src = raw.trim();
+  const expected = kind === 'dateTime' ? 'date and time' : kind;
 
-  const at = text.indexOf('@');
-  if (at > 0 && kind === 'dateTime') {
+  const at = src.indexOf('@');
+  let head = at > 0 ? src.slice(0, at) : src;
+  const z = parseZone(src);
+
+  // 偏移与时区名互斥（TCK 1116#071 / 1117#060）：`@` 之前不得再挂偏移
+  if (z.zone !== null && /(?:Z|[+-]\d\d:?\d\d(?::\d\d)?)$/i.test(head)) {
+    return shapeFail(fnName, src, expected);
+  }
+  if (z.offset !== null && !offsetOk(z.offset)) return shapeFail(fnName, src, expected);
+  if (z.zone !== null && !zoneExists(z.zone)) return shapeFail(fnName, src, expected);
+
+  if (kind === 'duration') {
+    // ISO 8601 不允许 `PT0.S` 这种"小数点后直接跟单位"，但 TCK 1120#011 要求按 0 秒解析
+    const patched = head.replace(/(\d)\.(?=[A-Z]|$)/g, '$1.0');
     try {
-      return wrap(kind, T.ZonedDateTime.from(`${text.slice(0, at)}[${text.slice(at + 1)}]`), src);
+      const norm = normalizeDuration(T, T.Duration.from(patched), patched);
+      return wrap('duration', norm.obj, undefined, undefined, norm.text);
     } catch {
-      return null;
+      return shapeFail(fnName, src, expected);
     }
   }
 
-  const Ctor = T[ctor];
-  if (!Ctor || typeof Ctor.from !== 'function') return null;
-  try {
-    const parsed = Ctor.from(text);
-    if (kind === 'duration') {
-      // 时长的 `src` 用**规范形**（规范化改变了值本身的写法，原文已无意义）
-      const norm = normalizeDuration(T, parsed, text);
-      return wrap(kind, norm.obj, norm.text);
+  // 年份只对"看起来像日期"的串动手（`11:22:33` 这类不能被误判成年份）
+  if (kind !== 'time' && /^-?\d+-\d{2}-\d{2}/.test(head)) {
+    const conv = convertYear(head);
+    if (conv === 'overflow') return null; // 写法合法、但超出实现源可表示范围
+    if (conv === 'invalid') return shapeFail(fnName, src, expected);
+    head = conv;
+  }
+
+  if (kind === 'time') {
+    // PlainTime 不收偏移 / `Z`（`23:59:00Z` 会抛），剥离后由 `src` 还原偏移
+    const local = localTimeOf(head);
+    if (!validTimeText(local)) return shapeFail(fnName, src, expected);
+    try {
+      return wrap('time', T.PlainTime.from(local), src);
+    } catch {
+      return shapeFail(fnName, src, expected);
     }
-    return wrap(kind, parsed, src);
+  }
+
+  if (kind === 'date') {
+    try {
+      return wrap('date', T.PlainDate.from(head), src);
+    } catch {
+      return shapeFail(fnName, src, expected);
+    }
+  }
+
+  // date and time：Plain* 家族同样不收偏移 / `Z`，剥离后再交给 Temporal
+  const local = localTimeOf(head);
+  if (clockOutOfRange(local)) return shapeFail(fnName, src, expected);
+  try {
+    if (z.zone !== null) return wrap('dateTime', T.ZonedDateTime.from(`${local}[${z.zone}]`), src);
+    return wrap('dateTime', T.PlainDateTime.from(local), src);
+  } catch {
+    return shapeFail(fnName, src, expected);
+  }
+}
+
+/** 纯时间串（可带 `Z` / `±HH:MM[:SS]` 偏移）→ 本地字段串；Plain* 家族都不收偏移 */
+function localTimeOf(text: string): string {
+  return text.replace(/(?:Z|[+-]\d\d:?\d\d(?::\d\d)?)$/i, '');
+}
+
+/* ---------------- 构造器（含重载分派） ---------------- */
+
+/** 零偏移（`P0D` / `PT0H` 都归一到这里，`zoneSuffix` 会写成 `Z`） */
+const ZERO_OFFSET: ZoneInfo = { offset: '+00:00', zone: null };
+
+/** 时长文本 → 时长值（失败给 `null`） */
+function durationFromText(text: string): Value {
+  return parseText('duration', text, null);
+}
+
+/** 日期 / 时间 / 日期时间文本 → 时间值（失败给 `null`；具名构造器另行传 fnName 抛错） */
+function temporalFromText(kind: 'date' | 'time' | 'dateTime', text: string): Value {
+  return parseText(kind, text, null);
+}
+
+/** 取「有年月日」的时间值（date / date and time）；不是则 null */
+function asDateLike(v: Value): FeelTemporal | null {
+  return isTemporal(v) && (v.kind === 'date' || v.kind === 'dateTime') ? v : null;
+}
+
+/** 取「时间」值；不是则 null */
+function asTimeLike(v: Value): FeelTemporal | null {
+  return isTemporal(v) && v.kind === 'time' ? v : null;
+}
+
+/**
+ * 从一个已有时间值里**取日期部分**（`date(<date/date-time>)`，TCK 1115#017~#024、#051）。
+ * date → 原样；date and time → 年月日（偏移/时区/时分秒一律丢弃）。
+ */
+function dateOf(v: FeelTemporal): Value {
+  const T = getTemporal();
+  if (!T) return null;
+  if (v.kind === 'date') return v;
+  if (v.kind !== 'dateTime') return null;
+  const raw = v.raw as { year: number; month: number; day: number };
+  try {
+    return wrap('date', T.PlainDate.from({ year: raw.year, month: raw.month, day: raw.day }));
   } catch {
     return null;
   }
 }
 
-/** 纯时间串（可带 `Z` / `±HH:MM` 偏移）→ 本地字段串；Temporal 的 PlainTime 不收偏移 */
-function localTimeOf(text: string): string {
-  return text.replace(/(?:Z|[+-]\d\d:?\d\d)$/i, '');
+/**
+ * 从一个已有时间值里**取时间部分**（`time(<time/date-time/date>)`，TCK 1116#030~#037、#049~#053）。
+ *
+ * - `time` → 原样；
+ * - `date and time` → 时分秒 + **它自己的偏移/时区**（从 `iso` 回溯，Plain* 会丢偏移）；
+ * - `date` → `00:00:00Z`（TCK 1116#053 的期望如此：日期没有偏移，转成时刻按零偏移记）。
+ */
+function timeOf(v: FeelTemporal): Value {
+  const T = getTemporal();
+  if (!T) return null;
+  if (v.kind === 'time') return v;
+  if (v.kind === 'date') {
+    try {
+      return wrap('time', T.PlainTime.from({ hour: 0, minute: 0, second: 0 }), undefined, ZERO_OFFSET);
+    } catch {
+      return null;
+    }
+  }
+  if (v.kind !== 'dateTime') return null;
+  const raw = v.raw as {
+    hour: number;
+    minute: number;
+    second: number;
+    millisecond: number;
+    microsecond: number;
+    nanosecond: number;
+  };
+  try {
+    const pt = T.PlainTime.from({
+      hour: raw.hour,
+      minute: raw.minute,
+      second: raw.second,
+      millisecond: raw.millisecond,
+      microsecond: raw.microsecond,
+      nanosecond: raw.nanosecond,
+    });
+    return wrap('time', pt, undefined, parseZone(v.iso));
+  } catch {
+    return null;
+  }
 }
 
-function construct(kind: FeelTemporal['kind'], ctor: string): NativeFn {
+/**
+ * 时长值 → UTC 偏移标注（`time(…, duration)` 的第四参，TCK 1116#039~#048、#082/#083）。
+ * 只取时/分/秒拼 `±HH:MM[:SS]`，并守 `±18:00` 上限（`P1D` 这类日分量同样落进总秒数一起判）。
+ */
+function offsetZone(v: Value, fnName: string): ZoneInfo {
+  if (!isTemporal(v) || v.kind !== 'duration') {
+    throw temporalValueError(fnName, { component: `offset = ${feelTypeName(v)}`, expected: 'duration' });
+  }
+  const raw = v.raw as Record<string, number>;
+  const total =
+    (raw.days ?? 0) * 86400 +
+    (raw.hours ?? 0) * 3600 +
+    (raw.minutes ?? 0) * 60 +
+    (raw.seconds ?? 0);
+  const sign = total < 0 ? '-' : '+';
+  const a = Math.abs(total);
+  const hh = Math.floor(a / 3600);
+  const mm = Math.floor((a % 3600) / 60);
+  const ss = a % 60;
+  if (hh > OFFSET_LIMIT_HOURS) {
+    throw temporalValueError(fnName, { component: `offset = ${v.iso}`, expected: 'within ±18:00' });
+  }
+  const pad = (x: number) => String(x).padStart(2, '0');
+  return { offset: `${sign}${pad(hh)}:${pad(mm)}${ss ? `:${pad(ss)}` : ''}`, zone: null };
+}
+
+/** `date(from)`：字符串 / date / date-time 三种入参（TCK 1115#011~#024、#050/#051） */
+function dateFromArg(v: Value, fnName: string): Value {
+  if (isTemporal(v)) {
+    const d = dateOf(v);
+    if (d === null) throw temporalValueError(fnName, { value: feelTypeName(v), expected: 'date' });
+    return d;
+  }
+  const s = toStr(v);
+  if (s === null) {
+    throw temporalValueError(fnName, { component: `from = ${feelTypeName(v)}`, expected: 'date' });
+  }
+  return parseText('date', s, fnName);
+}
+
+/** `time(from)`：字符串 / time / date-time / date（TCK 1116#017~#037、#053、#080/#081） */
+function timeFromArg(v: Value, fnName: string): Value {
+  if (isTemporal(v)) {
+    const t = timeOf(v);
+    if (t === null) throw temporalValueError(fnName, { value: feelTypeName(v), expected: 'time' });
+    return t;
+  }
+  const s = toStr(v);
+  if (s === null) {
+    throw temporalValueError(fnName, { component: `from = ${feelTypeName(v)}`, expected: 'time' });
+  }
+  return parseText('time', s, fnName);
+}
+
+/** `date and time(from)`：字符串 / date / date-time（TCK 1117#007~#028、#086） */
+function dateTimeFromArg(v: Value, fnName: string): Value {
+  const T = getTemporal();
+  if (!T) return null;
+  if (isTemporal(v)) {
+    if (v.kind === 'dateTime') return v;
+    if (v.kind === 'date') {
+      const raw = v.raw as { year: number; month: number; day: number };
+      try {
+        return wrap(
+          'dateTime',
+          T.PlainDateTime.from({ year: raw.year, month: raw.month, day: raw.day }),
+          undefined,
+          NO_ZONE,
+        );
+      } catch {
+        return null;
+      }
+    }
+    throw temporalValueError(fnName, { value: feelTypeName(v), expected: 'date and time' });
+  }
+  const s = toStr(v);
+  if (s === null) {
+    throw temporalValueError(fnName, {
+      component: `from = ${feelTypeName(v)}`,
+      expected: 'date and time',
+    });
+  }
+  return parseText('dateTime', s, fnName);
+}
+
+/**
+ * `date(<y>, <m>, <d>)` 分量式（TCK 1115#025~#030、#042~#047、#052）。
+ *
+ * 分量的**类型与范围**是我们守的（必须是整数、月 1–12、日 1–31）；闰年/月末交 Temporal。
+ * `|year| > 275760` 超出实现源可表示范围（TCK 用 9 位年测到）→ 给 `null` 并登记 `known-gaps`；
+ * 而 10 位年（`-1000999999`）本身就是非法写法 → 抛（由 `intComponent` 的范围实现）。
+ */
+function dateOfComponents(yv: Value, mv: Value, dv: Value, fnName: string): Value {
+  const T = getTemporal();
+  if (!T) return null;
+  const year = intComponent(yv, fnName, 'year', -999999999, 999999999);
+  const month = intComponent(mv, fnName, 'month', 1, 12);
+  const day = intComponent(dv, fnName, 'day', 1, 31);
+  try {
+    return wrap('date', T.PlainDate.from({ year, month, day }));
+  } catch {
+    if (Math.abs(year) > YEAR_LIMIT) return null; // 写法合法、实现源表示不了
+    throw temporalValueError(fnName, {
+      component: `date(${year}, ${month}, ${day})`,
+      expected: 'date',
+    });
+  }
+}
+
+/** `time(<h>, <m>, <s>[, offset])` 分量式（TCK 1116#015、#038~#048、#076~#079、#082/#083） */
+function timeOfComponents(hv: Value, mv: Value, sv: Value, ov: Value, fnName: string): Value {
+  const T = getTemporal();
+  if (!T) return null;
+  const hour = intComponent(hv, fnName, 'hour', 0, 23);
+  const minute = intComponent(mv, fnName, 'minute', 0, 59);
+  const second = intComponent(sv, fnName, 'second', 0, 59);
+  const zone = ov === null || ov === undefined ? NO_ZONE : offsetZone(ov, fnName);
+  try {
+    return wrap('time', T.PlainTime.from({ hour, minute, second }), undefined, zone);
+  } catch {
+    throw temporalValueError(fnName, {
+      component: `time(${hour}, ${minute}, ${second})`,
+      expected: 'time',
+    });
+  }
+}
+
+/**
+ * `date and time(<date>, <time>)` 组合式（TCK 1117#029~#054、#087/#088）。
+ *
+ * 规则（由 #041~#053 这一批反推）：**日期部分**取第一个实参的年月日，
+ * **时间部分与偏移/时区**取第二个实参 —— 第一个实参自带的偏移/时区一律**丢弃**。
+ */
+function combineDateTime(dv: Value, tv: Value, fnName: string): Value {
+  const T = getTemporal();
+  if (!T) return null;
+  const d = asDateLike(dv);
+  const t = asTimeLike(tv);
+  if (!d) {
+    throw temporalValueError(fnName, { component: `date = ${feelTypeName(dv)}`, expected: 'date' });
+  }
+  if (!t) {
+    throw temporalValueError(fnName, { component: `time = ${feelTypeName(tv)}`, expected: 'time' });
+  }
+  const dr = d.raw as { year: number; month: number; day: number };
+  const tr = t.raw as {
+    hour: number;
+    minute: number;
+    second: number;
+    millisecond: number;
+    microsecond: number;
+    nanosecond: number;
+  };
+  try {
+    const raw = T.PlainDateTime.from({
+      year: dr.year,
+      month: dr.month,
+      day: dr.day,
+      hour: tr.hour,
+      minute: tr.minute,
+      second: tr.second,
+      millisecond: tr.millisecond,
+      microsecond: tr.microsecond,
+      nanosecond: tr.nanosecond,
+    });
+    return wrap('dateTime', raw, undefined, parseZone(t.iso));
+  } catch {
+    throw temporalValueError(fnName, {
+      component: `date and time(${t.iso})`,
+      expected: 'date and time',
+    });
+  }
+}
+
+/** 实参个数不合法（既不是 `from` 也不是完整分量）→ 抛 */
+function badShape(fnName: string, argc: number, expected: string): never {
+  throw temporalValueError(fnName, { component: `argc = ${argc}`, expected });
+}
+
+/**
+ * 构造器工厂。**按实参个数 + 形参名表分派重载**：
+ *
+ * - `date`：1 → `from`；3 → `(y,m,d)`；4 → 命名式（`from:` 或 `year:/month:/day:`）
+ * - `time`：1 → `from`；3/4 → `(h,m,s[,offset])`；5 → 命名式（`from:` 或 `hour:/…`）
+ * - `date and time`：1 → `from`；2 → `(date,time)`；3 → 命名式（`from:` 或 `date:/time:`）
+ *
+ * 为什么看个数就够：命名调用经 `reorderNamedArgs` 后长度**恒等于形参个数**（缺省位补 `null`），
+ * 位置调用则就是实参个数 —— 两者在"位置 0 是否有值"上可分（见 evaluator 的 `call`）。
+ */
+function construct(kind: 'date' | 'time' | 'dateTime'): NativeFn {
+  const fnName = kind === 'dateTime' ? 'date and time' : kind;
   return (args) => {
+    if (!getTemporal()) return null;
+    const n = args.length;
+    const a = (i: number): Value => args[i] ?? null;
+
+    const fromShape = kind === 'date' ? 4 : kind === 'time' ? 5 : 3;
+    if (n === 1 || (n === fromShape && a(0) !== null)) {
+      if (kind === 'date') return dateFromArg(a(0), fnName);
+      if (kind === 'time') return timeFromArg(a(0), fnName);
+      return dateTimeFromArg(a(0), fnName);
+    }
+
+    if (kind === 'date') {
+      if (n === 3) return dateOfComponents(a(0), a(1), a(2), fnName);
+      if (n === 4) return dateOfComponents(a(1), a(2), a(3), fnName);
+      return badShape(fnName, n, 'date');
+    }
+    if (kind === 'time') {
+      if (n === 3) return timeOfComponents(a(0), a(1), a(2), null, fnName);
+      if (n === 4) return timeOfComponents(a(0), a(1), a(2), a(3), fnName);
+      if (n === 5) return timeOfComponents(a(1), a(2), a(3), a(4), fnName);
+      return badShape(fnName, n, 'time');
+    }
+    if (n === 2) return combineDateTime(a(0), a(1), fnName);
+    if (n === 3) return combineDateTime(a(1), a(2), fnName);
+    return badShape(fnName, n, 'date and time');
+  };
+}
+
+/** `duration(from)`：文本 → 时长值（非串给 `null`，与三值语义一致） */
+function durationFn(): NativeFn {
+  return (args) => {
+    if (!getTemporal()) return null;
     const s = toStr(args[0] ?? null);
     if (s === null) return null;
-    const original = s.trim();
-    // ISO 8601 不允许 `PT0.S` 这种"小数点后直接跟单位"，但 TCK 1120#011 要求按 0 秒解析
-    const text =
-      kind === 'duration' ? original.replace(/(\d)\.(?=[A-Z]|$)/g, '$1.0') : expandYear(original);
-    return parseTemporal(kind, ctor, text, original);
+    return durationFromText(s);
   };
 }
 
@@ -442,10 +899,8 @@ function construct(kind: FeelTemporal['kind'], ctor: string): NativeFn {
  *
  * 分派顺序有意如此：`^-?P` 是 duration 专有前缀；`HH:MM` 开头的只可能是 time
  * （否则 `11:22:33` 会被误判成含 `:` 的 date-time）；纯 `YYYY-MM-DD` 是 date；
- * 余下含 `T` 的才是 date-time。
- *
- * 带时区名后缀的写法（`@"2020-01-01T10:00:00@Europe/Paris"`）折算成 `ZonedDateTime`
- * （Temporal 用 `[…]` 表示时区），对外仍记作 `dateTime` 值 —— `FeelTemporal.kind` 只有四档。
+ * 余下含 `T` 的才是 date-time。**失败一律给 `null`** —— 这不是"类型错误"，
+ * 只是"这段文本不是该类型的字面量"（见 `shapeFail`）。
  */
 function atLiteralFn(): NativeFn {
   return (args) => {
@@ -453,37 +908,10 @@ function atLiteralFn(): NativeFn {
     const s = toStr(args[0] ?? null);
     if (!T || s === null) return null;
     const text = s.trim();
-
-    if (/^-?P/i.test(text)) return parseTemporal('duration', 'Duration', text, text);
-
-    const zoneAt = text.indexOf('@');
-    if (zoneAt > 0) {
-      const stamp = expandYear(text.slice(0, zoneAt));
-      const zone = text.slice(zoneAt + 1);
-      /*
-       * 纯时间 + 时区名（`@"23:00:50@Australia/Melbourne"`）：Temporal 没有 OffsetTime，
-       * 也没有"无日期的带时区时刻"，故按本地字段构造 PlainTime，
-       * 时区名只留在 `src` 里供 `eqKey` 与 `.timezone` 属性用（TCK 0093/0103）。
-       */
-      if (/^\d\d:\d\d/.test(stamp)) {
-        return parseTemporal('time', 'PlainTime', localTimeOf(stamp), text);
-      }
-      try {
-        return wrap('dateTime', T.ZonedDateTime.from(`${stamp}[${zone}]`), text);
-      } catch {
-        return null;
-      }
-    }
-
-    // 带偏移的纯时间（`@"23:00:50Z"` / `@"10:30:11+11:00"`）也要收：
-    // Temporal 的 PlainTime 会拒收 `Z`，故先剥掉偏移，偏移只留在 `src` 供 `eqKey` 用。
-    if (/^\d\d:\d\d/.test(text)) {
-      return parseTemporal('time', 'PlainTime', localTimeOf(text), text);
-    }
-    if (/^[+-]?\d{4,}-\d\d-\d\d$/.test(text)) {
-      return parseTemporal('date', 'PlainDate', expandYear(text), text);
-    }
-    return parseTemporal('dateTime', 'PlainDateTime', expandYear(text), text);
+    if (/^-?P/i.test(text)) return durationFromText(text);
+    if (/^\d\d:\d\d/.test(text)) return temporalFromText('time', text);
+    if (/^-?\d{4,}-\d\d-\d\d$/.test(text)) return temporalFromText('date', text);
+    return temporalFromText('dateTime', text);
   };
 }
 
@@ -520,12 +948,12 @@ function timeOffsetOf(v: Value): Value {
   if (!isTemporal(v)) return null;
   const src = (v.src ?? '').split('@')[0] ?? '';
   const m = /([+-])(\d{2}):?(\d{2})$/.exec(src);
-  if (!m) return src.endsWith('Z') ? construct('duration', 'Duration')(['PT0S'], EMPTY) : null;
+  if (!m) return src.endsWith('Z') ? durationFromText('PT0S') : null;
   let text = 'PT';
   if (Number(m[2])) text += `${Number(m[2])}H`;
   if (Number(m[3])) text += `${Number(m[3])}M`;
   if (text === 'PT') text = 'PT0S';
-  return construct('duration', 'Duration')([`${m[1] === '-' ? '-' : ''}${text}`], EMPTY);
+  return durationFromText(`${m[1] === '-' ? '-' : ''}${text}`);
 }
 
 /** `.timezone` → 时区名；无时区 → null。读 `iso`（规范文本）而不是 `src` —— 分量构造的值没有原文 */
@@ -580,7 +1008,8 @@ function yearsAndMonthsDuration(args: Value[]): Value {
     const daysInMonth = a.daysInMonth ?? 30;
     const months = Math.trunc(base + (b.day - a.day) / daysInMonth);
     const d = T.Duration.from({ years: Math.trunc(months / 12), months: months % 12 });
-    return wrap('duration', d, isoOf(d));
+    // 零值按 FEEL 写作 `P0M`（Temporal 的 toString 会退化成 `PT0S`，那是**另一个** FEEL 类型）
+    return wrap('duration', d, undefined, undefined, months === 0 ? 'P0M' : isoOf(d));
   } catch {
     return null;
   }
@@ -652,11 +1081,11 @@ export const TEMPORAL_BUILTINS: Record<string, NativeFn> = {
     }
     return NUMERIC_BUILTINS.abs!(a, ctx, rt);
   },
-  date: construct('date', 'PlainDate'),
-  time: construct('time', 'PlainTime'),
-  'date and time': construct('dateTime', 'PlainDateTime'),
-  dateTime: construct('dateTime', 'PlainDateTime'),
-  duration: construct('duration', 'Duration'),
+  date: construct('date'),
+  time: construct('time'),
+  'date and time': construct('dateTime'),
+  dateTime: construct('dateTime'),
+  duration: durationFn(),
   'years and months duration': yearsAndMonthsDuration,
   yearsAndMonthsDuration,
   year: propGetter('year'),
@@ -710,21 +1139,21 @@ export function registerTemporalBuiltins(): void {
 // ---------- 便捷构造 ----------
 
 export function dateValue(s: string): FeelTemporal | null {
-  const v = construct('date', 'PlainDate')([s], EMPTY);
+  const v = temporalFromText('date', s);
   return isTemporal(v) ? v : null;
 }
 
 export function timeValue(s: string): FeelTemporal | null {
-  const v = construct('time', 'PlainTime')([s], EMPTY);
+  const v = temporalFromText('time', s);
   return isTemporal(v) ? v : null;
 }
 
 export function dateTimeValue(s: string): FeelTemporal | null {
-  const v = construct('dateTime', 'PlainDateTime')([s], EMPTY);
+  const v = temporalFromText('dateTime', s);
   return isTemporal(v) ? v : null;
 }
 
 export function durationValue(s: string): FeelTemporal | null {
-  const v = construct('duration', 'Duration')([s], EMPTY);
+  const v = durationFromText(s);
   return isTemporal(v) ? v : null;
 }

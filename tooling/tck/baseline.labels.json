@@ -3,7 +3,7 @@
   "source": "DMN TCK — github.com/dmn-tck/tck（CC BY-SA，语料不随包分发）",
   "clock": "2026-05-12T00:00:00.000Z",
   "assertions": 2053,
-  "pass": 1666,
+  "pass": 1783,
   "labels": {
     "0050-feel-abs-function": {
       "pass": 17,
@@ -78,7 +78,7 @@
       "total": 9
     },
     "0068-feel-equality": {
-      "pass": 90,
+      "pass": 91,
       "total": 114
     },
     "0069-feel-list": {
@@ -122,7 +122,7 @@
       "total": 2
     },
     "0079-feel-string-function": {
-      "pass": 7,
+      "pass": 37,
       "total": 37
     },
     "0080-feel-getvalue-function": {
@@ -154,7 +154,7 @@
       "total": 18
     },
     "0093-feel-at-literals": {
-      "pass": 17,
+      "pass": 19,
       "total": 19
     },
     "0094-feel-product-function": {
@@ -190,7 +190,7 @@
       "total": 4
     },
     "0103-feel-is-function": {
-      "pass": 49,
+      "pass": 50,
       "total": 50
     },
     "0105-feel-math": {
@@ -254,15 +254,15 @@
       "total": 40
     },
     "1115-feel-date-function": {
-      "pass": 33,
+      "pass": 48,
       "total": 52
     },
     "1116-feel-time-function": {
-      "pass": 46,
+      "pass": 83,
       "total": 83
     },
     "1117-feel-date-and-time-function": {
-      "pass": 55,
+      "pass": 86,
       "total": 88
     },
     "1120-feel-duration-function": {

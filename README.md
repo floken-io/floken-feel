@@ -136,8 +136,14 @@ evaluate('now()', ctx, {
 
 | 口径 | 通过 | 说明 |
 |---|---:|---|
-| **严格**（官方 `errorResult`：期望抛错就必须抛错） | **889 / 2053（43.3%）** | 我们的主口径 |
-| 宽松（上游私有野规则："期望 null 时抛错也算过"） | 1220 / 2053（59.4%） | **仅用于与上游 92.6% 对照**，不作门禁 |
+| **严格**（官方 `errorResult`：期望抛错就必须抛错） | **1632 / 2053（79.5%）** | 我们的主口径 |
+| 宽松（上游私有野规则："期望 null 时抛错也算过"） | 1783 / 2053（86.8%） | **仅用于与上游 92.6% 对照**，不作门禁 |
+
+79 组中 **40 组满分**；`tooling/tck/baseline.labels.json` 是**逐 label 防退化基线**（重跑后任一组低于它即判退化）。
+
+**已知 gap（6 条，不打算修）**：`1115#015/#016/#029/#030` 与 `1117#027/#028` 用的是 9 位年份
+（`999999999-12-31`）—— 写法合法，但超出 `temporal-polyfill` 可表示范围（±275760），
+按 `known-gaps` 记：给 `null` 而不是抛错（见 `05-包需求-floken-feel.md` §7.5）。
 
 > ⚠️ **别拿 `3391 / 3495` 来问本包** —— 那是 **A 口径**（完整 DMN TCK，含 DRG 遍历 / 决策表 / 命中策略），
 > 归属于 `floken-dmn`；本包没有 DMN 引擎，跑不出来。本包能自证的官方上限就是上面这 2053。
@@ -259,14 +265,17 @@ evaluate('true or null').value;  // true
 
 ### 6.1 实现源：统一 `temporal-polyfill`（ADR Q32）
 
-**使用本档必须安装 `temporal-polyfill`（≥ 1.0.5），与 Node 版本无关。**
+**本档自带 `temporal-polyfill`（`>=1.0.5 <2.0.0`），无需手动安装，与 Node 版本无关。**
 
-```bash
-npm install temporal-polyfill
-```
-
-> 依赖形态：`peerDependencies` + `optional: true` —— **核心档（`.` / `./unary-tests`）不需要它**，
-> 故不强制所有用户安装；但**一旦用 `./temporal`，它就是硬需求**（缺失即抛 `FEEL_ENV_TEMPORAL_MISSING`）。
+> 依赖形态（⚠️ **ADR Q33，2026-09-25 修订**）：`temporal-polyfill` 是本包的**普通 `dependencies`（自带）**，
+> 不再是 `peerDependencies` + `optional: true` —— **装上 `floken-feel` 就有时间函数**，
+> 不用再单独 `npm install temporal-polyfill`。
+>
+> 为什么改：Q32 已把它定为 `./temporal` 档的**必需**依赖，而 `optional: true` 意味着"不装也能用"，
+> 二者自相矛盾 —— 宿主漏装时只在**运行期**才炸（且报错点离病灶很远）。
+>
+> 代价（诚实）：`floken-engine` 这类默认依赖本包的包，`node_modules` 里会多出这一份 polyfill（~1114 KB）；
+> 但只要不 `import 'floken-feel/temporal'` 就**永远不会加载**它，**运行开销为零**。
 
 | 口径 | 说明 |
 |---|---|

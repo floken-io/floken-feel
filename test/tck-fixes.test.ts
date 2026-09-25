@@ -159,3 +159,162 @@ describe('floken-feel · TCK 修复回归 · 形参有类型（0050/0056/1101/11
     expect(catchErr('abs(date("2018-12-06"))')?.code).toBe('FEEL_EVAL_ARG_TYPE');
   });
 });
+
+/**
+ * 时间构造器的**重载与写法校验**，以及 `string()` 的规范文本。
+ *
+ * 这一批对应 `1115-feel-date-function` / `1116-feel-time-function` /
+ * `1117-feel-date-and-time-function` / `0079-feel-string-function` 四组的集中失分
+ * （合计约 109 条），语义全部由 TCK 逐条反推、再钉在这里防退化。
+ */
+describe('floken-feel · TCK 修复回归 · 时间构造器重载与写法（1115/1116/1117）', () => {
+  const catchErr = (src: string) => {
+    try {
+      evaluate(src);
+      return null;
+    } catch (e) {
+      return e as { code: string; details?: Record<string, unknown> };
+    }
+  };
+  const iso = (src: string) => {
+    const v = evaluate(src).value;
+    return isTemporal(v) ? v.iso : null;
+  };
+
+  it('`from` 三种入参：字符串 / 同类值 / 从 date-time 提取（1115#017~#024、1116#030~#037）', () => {
+    expect(iso('date("2017-12-31")')).toBe('2017-12-31');
+    expect(iso('date(date("2017-10-11"))')).toBe('2017-10-11');
+    expect(iso('date(date and time("2017-08-14T14:25:00"))')).toBe('2017-08-14');
+    expect(iso('date(date and time("2017-09-03T09:45:30@Europe/Paris"))')).toBe('2017-09-03');
+    expect(iso('time(date and time("2017-08-10T10:20:00"))')).toBe('10:20:00');
+    // 提取时间时**保留原值的偏移/时区**
+    expect(iso('time(date and time("2017-08-10T10:20:00+01:00"))')).toBe('10:20:00+01:00');
+    expect(iso('time(date and time("2017-09-04T11:20:00@Asia/Dhaka"))')).toBe('11:20:00@Asia/Dhaka');
+    // date → 时刻按零偏移记（1116#053）
+    expect(iso('time(date("2017-08-10"))')).toBe('00:00:00Z');
+  });
+
+  it('`date and time(date, time)` 组合：日期取前者、偏移/时区取后者（1117#029~#054）', () => {
+    expect(iso('date and time(date("2017-01-01"), time("23:59:01"))')).toBe('2017-01-01T23:59:01');
+    expect(iso('date and time(date("2017-01-01"), time("23:59:01Z"))')).toBe('2017-01-01T23:59:01Z');
+    expect(iso('date and time(date("2017-01-01"), time("23:59:01@Europe/Paris"))')).toBe(
+      '2017-01-01T23:59:01@Europe/Paris',
+    );
+    // 第一个实参自带的偏移被丢弃（#041）
+    expect(
+      iso('date and time(date and time("2017-08-10T10:20:00+02:00"), time("23:59:01"))'),
+    ).toBe('2017-08-10T23:59:01');
+  });
+
+  it('分量式与命名参数（1115#025/#052、1116#038~#048/#082、1117#087）', () => {
+    expect(iso('date(2017, 12, 31)')).toBe('2017-12-31');
+    expect(iso('date(year:2017, month:8, day:30)')).toBe('2017-08-30');
+    expect(iso('date(from:"2012-12-25")')).toBe('2012-12-25');
+    expect(iso('time(11, 59, 45, null)')).toBe('11:59:45');
+    expect(iso('time(11, 59, 45, duration("PT2H"))')).toBe('11:59:45+02:00');
+    expect(iso('time(11, 59, 45, duration("PT2H45M55S"))')).toBe('11:59:45+02:45:55');
+    // 零偏移一律归一成 `Z`（`PT0H` 与 `-PT0H` 都算零）
+    expect(iso('time(11, 59, 45, duration("PT0H"))')).toBe('11:59:45Z');
+    expect(iso('time(11, 59, 45, duration("-PT0H"))')).toBe('11:59:45Z');
+    expect(iso('time(hour:11, minute:59, second:0, offset: duration("PT2H1M0S"))')).toBe(
+      '11:59:00+02:01',
+    );
+    // `-00:00` / `+00:00` 文本写法也归一成 `Z`（1116#026/#027）
+    expect(iso('time("11:22:33-00:00")')).toBe('11:22:33Z');
+    expect(iso('time("11:22:33+00:00")')).toBe('11:22:33Z');
+  });
+
+  it('年份写法：4~9 位、不许前导零/正号，负年补扩年（1115#013、1117#010~#012）', () => {
+    expect(iso('date("-2017-12-31")')).toBe('-2017-12-31');
+    expect(iso('date and time("99999-12-31T11:22:33")')).toBe('99999-12-31T11:22:33');
+    expect(iso('date and time("-99999-12-31T11:22:33")')).toBe('-99999-12-31T11:22:33');
+    for (const bad of ['date("998-12-31")', 'date("01211-12-31")', 'date("9999999999-12-25")', 'date("+2012-12-02")']) {
+      expect(catchErr(bad)?.code, bad).toBe('FEEL_EVAL_TEMPORAL_VALUE');
+    }
+  });
+
+  it('写法非法一律抛 EVAL_TEMPORAL_VALUE（不是给 null）', () => {
+    const bad = [
+      'date("2017-13-10")', // 月越界
+      'date("2012/12/25")', // 分隔符
+      'date(2017, 13, 31)',
+      'date(2017, -8, 2)',
+      'date(null, 2, 1)',
+      'date(1)',
+      'date([])',
+      'date()',
+      'time(23, 60, 45, null)', // 分越界
+      'time(24, 59, 45, null)', // 时越界
+      'time("23:59:60")', // 闰秒（Temporal 会静默规整，必须拦）
+      'time("7:00:00")', // 未补零
+      'time(2017)', // 数字不是时间（Temporal 会读成 20:17）
+      'time("13:20:00+19:00")', // 偏移超 ±18:00
+      'time("13:20:00@xyz/abc")', // 时区名不存在
+      'time("13:20:00+02:00@Europe/Paris")', // 偏移与时区名互斥
+      'date and time("2017-12-31T24:00:01")',
+      'date and time("11:00:00")', // 没有日期部分
+      'date and time(null)',
+      'date and time(date("2017-08-10"), null)',
+    ];
+    for (const src of bad) {
+      expect(catchErr(src)?.code, src).toBe('FEEL_EVAL_TEMPORAL_VALUE');
+    }
+  });
+
+  it('超出实现源可表示范围的年份 → null（known-gap，不是错误）', () => {
+    // `999999999` 是合法 FEEL 写法，但 Temporal 只到 ±275760
+    expect(evaluate('date("999999999-12-31")').value).toBe(null);
+    expect(evaluate('date(999999999, 12, 31)').value).toBe(null);
+  });
+});
+
+describe('floken-feel · TCK 修复回归 · string() 规范文本（0079）', () => {
+  const catchErr = (src: string) => {
+    try {
+      evaluate(src);
+      return null;
+    } catch (e) {
+      return e as { code: string; details?: Record<string, unknown> };
+    }
+  };
+  const s = (src: string) => evaluate(src).value;
+
+  it('标量：字符串返回自身，数字/布尔写字面', () => {
+    expect(s('string("foo")')).toBe('foo');
+    expect(s('string(123.45)')).toBe('123.45');
+    expect(s('string(true)')).toBe('true');
+    expect(s('string(null)')).toBe(null);
+  });
+
+  it('时间值用 `iso`（FEEL 规范文本）', () => {
+    expect(s('string(date("2018-12-10"))')).toBe('2018-12-10');
+    expect(s('string(date and time("2018-12-10"))')).toBe('2018-12-10T00:00:00');
+    expect(s('string(date and time("2018-12-10T10:30:00@Etc/UTC"))')).toBe(
+      '2018-12-10T10:30:00@Etc/UTC',
+    );
+    expect(s('string(time("10:30:00.0001+05:00:01"))')).toBe('10:30:00.0001+05:00:01');
+  });
+
+  it('时长按规范化后的规范形（含两类零值）', () => {
+    expect(s('string(duration("PT49H"))')).toBe('P2DT1H');
+    expect(s('string(duration("P25M"))')).toBe('P2Y1M');
+    expect(s('string(duration("P0D"))')).toBe('PT0S');
+    expect(s('string(duration("P0Y"))')).toBe('P0M');
+    // 两个 FEEL duration 类型的零值**不相等**（P0M vs PT0S）
+    expect(s('is(@"P0Y", @"P0D")')).toBe(false);
+  });
+
+  it('list / context 用字面形态，元素递归、字符串带引号', () => {
+    expect(s('string([1, 2, 3, "foo"])')).toBe('[1, 2, 3, "foo"]');
+    expect(s('string([1,2,3,[4,5,"foo"]])')).toBe('[1, 2, 3, [4, 5, "foo"]]');
+    expect(s('string({a: "foo"})')).toBe('{a: "foo"}');
+    expect(s('string({a: "foo", b: {bar: "baz"}})')).toBe('{a: "foo", b: {bar: "baz"}}');
+    expect(s('string({"{" : "foo"})')).toBe('{"{": "foo"}');
+  });
+
+  it('实参个数必须恰好 1（少给/多给抛 EVAL_ARG_COUNT）', () => {
+    expect(catchErr('string()')?.code).toBe('FEEL_EVAL_ARG_COUNT');
+    expect(catchErr('string("foo", "bar")')?.code).toBe('FEEL_EVAL_ARG_COUNT');
+    expect(s('string(from:"foo")')).toBe('foo');
+  });
+});
