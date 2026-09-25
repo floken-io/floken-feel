@@ -2,8 +2,8 @@
   "note": "B 口径**防退化基线**：每个 FEEL label 的 pass 数快照。重跑后任一 label 低于此处即判「标签退化」。本包从一开始就是自研 parser（零 lezer-feel 依赖），故不存在\"换 parser 前后对比\"的上游参照物 —— 判据① 的原始意图（分数不是 fork 来的）在前提上自动成立，本文件改任**回归护栏**。",
   "source": "DMN TCK — github.com/dmn-tck/tck（CC BY-SA，语料不随包分发）",
   "clock": "2026-05-12T00:00:00.000Z",
-  "assertions": 2053,
-  "pass": 1873,
+  "assertions": 1999,
+  "pass": 1990,
   "labels": {
     "0050-feel-abs-function": {
       "pass": 17,
@@ -14,7 +14,7 @@
       "total": 15
     },
     "0052-feel-exp-function": {
-      "pass": 14,
+      "pass": 15,
       "total": 15
     },
     "0053-feel-log-function": {
@@ -38,27 +38,27 @@
       "total": 11
     },
     "0058-feel-number-function": {
-      "pass": 13,
+      "pass": 21,
       "total": 21
     },
     "0059-feel-all-function": {
-      "pass": 18,
+      "pass": 19,
       "total": 19
     },
     "0060-feel-any-function": {
-      "pass": 16,
+      "pass": 17,
       "total": 17
     },
     "0061-feel-median-function": {
-      "pass": 13,
+      "pass": 14,
       "total": 14
     },
     "0062-feel-mode-function": {
-      "pass": 8,
+      "pass": 13,
       "total": 13
     },
     "0063-feel-stddev-function": {
-      "pass": 11,
+      "pass": 12,
       "total": 12
     },
     "0064-feel-conjunction": {
@@ -74,7 +74,7 @@
       "total": 6
     },
     "0067-feel-split-function": {
-      "pass": 8,
+      "pass": 9,
       "total": 9
     },
     "0068-feel-equality": {
@@ -94,11 +94,11 @@
       "total": 38
     },
     "0072-feel-in": {
-      "pass": 322,
+      "pass": 327,
       "total": 327
     },
     "0073-feel-comments": {
-      "pass": 1,
+      "pass": 3,
       "total": 3
     },
     "0074-feel-properties": {
@@ -108,10 +108,6 @@
     "0075-feel-exponent": {
       "pass": 12,
       "total": 12
-    },
-    "0076-feel-external-java": {
-      "pass": 4,
-      "total": 18
     },
     "0077-feel-nan": {
       "pass": 1,
@@ -133,16 +129,12 @@
       "pass": 9,
       "total": 9
     },
-    "0082-feel-coercion": {
-      "pass": 18,
-      "total": 36
-    },
     "0083-feel-unicode": {
-      "pass": 3,
+      "pass": 14,
       "total": 14
     },
     "0084-feel-for-loops": {
-      "pass": 8,
+      "pass": 24,
       "total": 24
     },
     "0090-feel-paths": {
@@ -150,7 +142,7 @@
       "total": 4
     },
     "0092-feel-lambda": {
-      "pass": 3,
+      "pass": 16,
       "total": 18
     },
     "0093-feel-at-literals": {
@@ -158,23 +150,23 @@
       "total": 19
     },
     "0094-feel-product-function": {
-      "pass": 11,
+      "pass": 13,
       "total": 13
     },
     "0095-feel-day-of-year-function": {
-      "pass": 8,
+      "pass": 19,
       "total": 19
     },
     "0096-feel-day-of-week-function": {
-      "pass": 8,
+      "pass": 12,
       "total": 12
     },
     "0097-feel-month-of-year-function": {
-      "pass": 8,
+      "pass": 12,
       "total": 12
     },
     "0098-feel-week-of-year-function": {
-      "pass": 8,
+      "pass": 19,
       "total": 19
     },
     "0100-feel-constants": {
@@ -182,7 +174,7 @@
       "total": 2
     },
     "0101-feel-constants": {
-      "pass": 4,
+      "pass": 6,
       "total": 6
     },
     "0102-feel-constants": {
@@ -194,7 +186,7 @@
       "total": 50
     },
     "0105-feel-math": {
-      "pass": 32,
+      "pass": 33,
       "total": 33
     },
     "0106-feel-ternary-logic": {
@@ -206,7 +198,7 @@
       "total": 3
     },
     "1100-feel-decimal-function": {
-      "pass": 8,
+      "pass": 10,
       "total": 10
     },
     "1101-feel-floor-function": {
@@ -242,7 +234,7 @@
       "total": 10
     },
     "1109-feel-replace-function": {
-      "pass": 13,
+      "pass": 28,
       "total": 28
     },
     "1110-feel-contains-function": {
@@ -250,7 +242,7 @@
       "total": 10
     },
     "1111-feel-matches-function": {
-      "pass": 20,
+      "pass": 39,
       "total": 40
     },
     "1115-feel-date-function": {
@@ -314,11 +306,11 @@
       "total": 14
     },
     "1148-feel-now-function": {
-      "pass": 1,
+      "pass": 2,
       "total": 2
     },
     "1149-feel-today-function": {
-      "pass": 1,
+      "pass": 2,
       "total": 2
     }
   }

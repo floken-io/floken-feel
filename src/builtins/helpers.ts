@@ -91,7 +91,7 @@ export function optScale(
 
 // ---------------- 舍入 ----------------
 
-export type RoundMode = 'floor' | 'ceiling' | 'up' | 'down' | 'halfUp' | 'halfDown';
+export type RoundMode = 'floor' | 'ceiling' | 'up' | 'down' | 'halfUp' | 'halfDown' | 'halfEven';
 
 /** 对已缩放整数 `x` 施加舍入模式（`up`/`down` 按**绝对值**方向，见 DMN 的 round up/down） */
 function applyMode(x: number, mode: RoundMode): number {
@@ -104,6 +104,8 @@ function applyMode(x: number, mode: RoundMode): number {
       return x < 0 ? -Math.ceil(-x) : Math.ceil(x);
     case 'down': // 靠近 0
       return x < 0 ? -Math.floor(-x) : Math.floor(x);
+    case 'halfEven': // 银行家舍入：`.5` 落到**偶数**一侧（DMN 的 decimal()）
+      return roundHalfEven(x);
     case 'halfUp':
     case 'halfDown': {
       const lower = Math.floor(x);
@@ -116,6 +118,19 @@ function applyMode(x: number, mode: RoundMode): number {
       return Math.round(x);
     }
   }
+}
+
+/**
+ * 银行家舍入（round half to even）：`1.5` → 2、`2.5` → 2、`0.5` → 0、`-1.5` → -2。
+ *
+ * 为什么要自己写：JS 的 `Math.round` 是 half-up（`Math.round(2.5)` = 3），
+ * 而 `decimal(2.5, 0)` 按 DMN 1.4 §10.3.3.1 必须得 2（TCK 1100#004）。
+ */
+function roundHalfEven(x: number): number {
+  const lower = Math.floor(x);
+  const frac = x - lower;
+  if (Math.abs(frac - 0.5) < 1e-9) return lower % 2 === 0 ? lower : lower + 1;
+  return Math.round(x);
 }
 
 /**
@@ -152,6 +167,25 @@ export function numericList(values: readonly Value[]): number[] {
   for (const v of values) {
     const n = toNumber(v);
     if (n !== null) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * **严格版**列表聚合：每个元素都必须是 number，否则抛 `FEEL_EVAL_ARG_TYPE`。
+ *
+ * 用于 `median` / `product` / `stddev` / `mode` —— 它们的形参是 `list<number>`，
+ * 含 `null` 或字符串即**类型错误**（TCK 0061#005 / 0062#005 / 0063#005 / 0094#004~005）。
+ * 与上面会静默跳过的 `numericList` 分开，是因为 TCK 对两组的期望正好相反：
+ * `sum([1,2,"foo"])` 容忍，而 `product([1,2,"foo"])` 必须报错。
+ */
+export function strictNumericList(values: readonly Value[], fnName: string): number[] {
+  const out: number[] = [];
+  for (const v of values) {
+    if (typeof v !== 'number' || !Number.isFinite(v)) {
+      throw argTypeError(fnName, 'list', 'list<number>', feelTypeName(v));
+    }
+    out.push(v);
   }
   return out;
 }

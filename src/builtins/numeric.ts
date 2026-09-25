@@ -20,6 +20,7 @@ import {
   requireArity,
   roundScaled,
   spread,
+  strictNumericList,
 } from './helpers.js';
 
 /** 舍入家族的共用骨架：`n` 必需、`scale` 选填（未给按 0） */
@@ -43,8 +44,11 @@ export const NUMERIC_BUILTINS: Record<string, NativeFn> = {
   decimal: (a) => {
     requireArity(a, 'decimal', 1, 2);
     const n = reqNumber(a, 0, 'decimal', 'n');
-    // scale 为负表示"取整到 10 的幂"，故允许；范围同舍入家族
-    return roundScaled(n, optScale(a, 1, 'decimal'), 'halfUp');
+    // scale 为负表示"取整到 10 的幂"，故允许；范围同舍入家族。
+    // ⚠️ 舍入模式是**银行家舍入**（DMN 1.4 §10.3.3.1 的 decimal = round half even）：
+    // `1.5` → 2 而 `2.5` → 2（TCK 1100#003~#004），用 JS 的 Math.round 会得 3。
+    // 非整数 scale 按**截断**处理：`decimal(1/3, 2.5)` 期望 0.33，即 scale 取 2。
+    return roundScaled(n, Math.trunc(optScale(a, 1, 'decimal')), 'halfEven');
   },
 
   // ----- 一元数学 -----
@@ -113,21 +117,25 @@ export const NUMERIC_BUILTINS: Record<string, NativeFn> = {
     return nums.reduce((x, y) => x + y, 0) / nums.length;
   },
   median: (a) => {
-    const nums = numericList(spread(a)).sort((x, y) => x - y);
+    requireArity(a, 'median', 1, Infinity);
+    const nums = strictNumericList(spread(a), 'median').sort((x, y) => x - y);
     if (nums.length === 0) return null;
     const mid = Math.floor(nums.length / 2);
     if (nums.length % 2 === 1) return nums[mid] ?? null;
     return ((nums[mid - 1] ?? 0) + (nums[mid] ?? 0)) / 2;
   },
+  /** 空列表 / 含非数字 → 抛（TCK 0094#002 / #004~005 都是 `errorResult`） */
   product: (a) => {
-    const nums = numericList(spread(a));
-    if (nums.length === 0) return null;
+    requireArity(a, 'product', 1, Infinity);
+    const nums = strictNumericList(spread(a), 'product');
+    if (nums.length === 0) throw undefinedResultError('product', { list: [] });
     return nums.reduce((x, y) => x * y, 1);
   },
-  /** 样本标准差（除以 n-1，对齐 DMN）；n < 2 → null */
+  /** 样本标准差（除以 n-1，对齐 DMN）；元素非数字或个数 < 2 → 抛（TCK 0063#007~008_a） */
   stddev: (a) => {
-    const nums = numericList(spread(a));
-    if (nums.length < 2) return null;
+    requireArity(a, 'stddev', 1, Infinity);
+    const nums = strictNumericList(spread(a), 'stddev');
+    if (nums.length < 2) throw undefinedResultError('stddev', { list: nums });
     const mean = nums.reduce((x, y) => x + y, 0) / nums.length;
     const variance = nums.reduce((acc, x) => acc + (x - mean) ** 2, 0) / (nums.length - 1);
     return Math.sqrt(variance);

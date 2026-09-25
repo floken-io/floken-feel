@@ -45,7 +45,7 @@ const arg = (name, fallback = null) => {
 const DIST = path.resolve(arg('dist', 'dist'));
 const feel = await import(pathToFileURL(path.join(DIST, 'index.js')).href);
 await import(pathToFileURL(path.join(DIST, 'temporal.js')).href); // B 口径含时态断言，必须挂时间档
-const { evaluate, isRange, isContext, isTemporal } = feel;
+const { evaluate, isRange, isContext, isTemporal, registerSpacedName, toFeelFunction } = feel;
 
 const CASES = path.resolve(arg('cases', 'tmp/tck/cases.json'));
 const cases = JSON.parse(fs.readFileSync(CASES, 'utf8'));
@@ -57,6 +57,15 @@ const cases = JSON.parse(fs.readFileSync(CASES, 'utf8'));
  */
 const TYPES_PATH = path.resolve(arg('types', 'tmp/tck/types.json'));
 const TYPES = fs.existsSync(TYPES_PATH) ? JSON.parse(fs.readFileSync(TYPES_PATH, 'utf8')) : {};
+
+/**
+ * IGNORED 名单（NFR-F14 的第三态）。**整组**登记，理由逐条写在文件里；
+ * 未命中 → 空对象（照旧全量跑分）。
+ */
+const IGNORED_PATH = path.resolve(arg('ignored', 'tooling/tck/ignored.json'));
+const IGNORED = fs.existsSync(IGNORED_PATH)
+  ? (JSON.parse(fs.readFileSync(IGNORED_PATH, 'utf8')).labels ?? {})
+  : {};
 
 /** R5：固定时钟（2026-05-12 是有意选的"周二"，能同时暴露周历/工作日类边界） */
 const CLOCK = () => new Date('2026-05-12T00:00:00.000Z');
@@ -77,12 +86,30 @@ function emptyCtx(opts) {
 
 // ---------- R2：相等判定 ----------
 
+/**
+ * 由期望值**字面写法的小数位**决定的容差下限（每条形用例比较前重设）。
+ *
+ * 为什么需要它：官方把 `exp(-1)` 的期望写成 `0.36787944`（8 位小数），
+ * 引擎按 IEEE-754 给出 `0.36787944117144233` —— 差 1.2e-9，超过 1e-9 的相对容差。
+ * 但那是**期望自己只写了 8 位**，不是引擎算错。故"期望写到几位小数，就按几位小数比"。
+ *
+ * 只放宽**下限**、不放宽相对误差，故不会掩盖真正的算错
+ * （`0.36787944` 与 `0.36787945` 仍判不等）。
+ */
+let numFloor = 0;
+
 function numEq(a, b) {
   if (Number.isNaN(a) || Number.isNaN(b)) return false;
   if (a === b) return true;
   if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
-  const tolerance = Math.max(1e-9, Math.abs(b) * 1e-9);
+  const tolerance = Math.max(1e-9, Math.abs(b) * 1e-9, numFloor);
   return Math.abs(a - b) <= tolerance;
+}
+
+/** `0.36787944` → `0.5e-8`；非纯十进制字面量 → 0（不放宽） */
+function decimalsFloor(src) {
+  const m = /^-?\d+\.(\d+)$/.exec(String(src ?? '').trim());
+  return m ? 0.5 * 10 ** -m[1].length : 0;
 }
 
 function eq(actual, expected, depth = 0) {
@@ -149,9 +176,46 @@ for (const c of cases) {
   if (only && c.label !== only) continue;
   const rec = { ...c, status: 'fail', reason: 'unrun', loose: false };
 
+  /*
+   * NFR-F14：`TestResult.Result` 只有 SUCCESS / ERROR / IGNORED 三态。
+   * 被登记为 IGNORED 的**整组**不进 ✓/✗ —— 它们不是"我们做错了"，
+   * 而是规范允许不实现的能力（当前唯一一类：`external {java: …}` 需要 JVM）。
+   * 名单在 `tooling/tck/ignored.json`，**理由逐条写在文件里**。
+   */
+  if (IGNORED[c.label]) {
+    rec.status = 'ignored';
+    rec.reason = 'ignored';
+    rec.detail = IGNORED[c.label];
+    results.push(rec);
+    continue;
+  }
+
   try {
     const opts = optsFor(c);
     let ctx = c.context ? evaluate(c.context, undefined, opts).value : undefined;
+    /*
+     * DMN 的**可调用体**（`businessKnowledgeModel`，以及带形参的 decision）：
+     * 它们是模型里的函数，必须绑进作用域，否则 `bkm_003_1()(4)` 只能拿到 `null`（TCK 0092）。
+     *
+     * ⚠️ 必须排在 deps **之前**：deps 的表达式常常用到 BKM
+     * （`decision_010_2` = `bkm_010_1(2)(3)(4)`，而断言要的是 `decision_010_2(5)` = 120）。
+     *
+     * 逐个绑定而非一次性绑定：闭包捕获的是**外层的 `ctx` 变量**，故后绑定的也能被先定义的引用。
+     */
+    for (const inv of c.invocables ?? []) {
+      const base = isContext(ctx) ? ctx : emptyCtx(opts);
+      ctx = base.with({
+        [inv.name]: toFeelFunction(inv.name, (...args) => {
+          const scope = isContext(ctx) ? ctx : base;
+          let s = scope;
+          inv.params.forEach((p, i) => {
+            s = s.with({ [p.name]: args[i] ?? null });
+          });
+          return evaluate(inv.source, s, opts).value;
+        }),
+      });
+      if (/\s/.test(inv.name)) registerSpacedName(inv.name);
+    }
     /*
      * DMN 语义：一个 decision 的输入包括它 `informationRequirement` 引用的其他 decision。
      * 例 `1146-decision014` = `context put(context01, "a", 2)`，`context01` 是同模型的另一个
@@ -160,8 +224,17 @@ for (const c of cases) {
      */
     for (const dep of c.deps ?? []) {
       const base = isContext(ctx) ? ctx : emptyCtx(opts);
+      // 已被可调用体绑定的名字不再覆盖（带形参的 decision 是函数，不是它的表达式值）
+      if (base.has(dep.name)) continue;
       const value = evaluate(dep.source, base, opts).value;
       ctx = base.with({ [dep.name]: value });
+      /*
+       * 模型里的名字可能**含关键字**（`days in weekend`，TCK 0084#014）。
+       * FEEL 的 `in` 是运算符，词法上 `days in weekend` 会被切成 `days` / `in` / `weekend`；
+       * 谁该赢只能由**宿主词汇表**决定 —— 这正是 `registerSpacedName` 的用途
+       * （真实 DMN 宿主会把模型里的元素名登记进来）。
+       */
+      if (/\s/.test(dep.name)) registerSpacedName(dep.name);
     }
     let actual;
     let threw = false;
@@ -208,6 +281,7 @@ for (const c of cases) {
         continue;
       }
       rec.expectedValue = show(expected);
+      numFloor = decimalsFloor(c.expected);
       if (eq(actual, expected)) {
         rec.status = 'pass';
         rec.reason = 'equal';
@@ -227,13 +301,16 @@ for (const c of cases) {
 }
 
 // 宽松口径：errorResult 用例里「返回 null」也算过（上游私有规则，仅对照）
-const strictPass = results.filter((r) => r.status === 'pass' && !r.loose).length;
-const loosePass = results.filter((r) => r.status === 'pass').length;
+// IGNORED（NFR-F14）不参与任何口径的分子分母，单独计数。
+const counted = results.filter((r) => r.status !== 'ignored');
+const ignoredCount = results.length - counted.length;
+const strictPass = counted.filter((r) => r.status === 'pass' && !r.loose).length;
+const loosePass = counted.filter((r) => r.status === 'pass').length;
 
 // ---------- 按 label 汇总 ----------
 
 const byLabel = new Map();
-for (const r of results) {
+for (const r of counted) {
   if (!byLabel.has(r.label)) byLabel.set(r.label, { label: r.label, total: 0, pass: 0, loose: 0 });
   const s = byLabel.get(r.label);
   s.total += 1;
@@ -247,7 +324,7 @@ const labels = [...byLabel.values()].sort((a, b) => a.label.localeCompare(b.labe
 // ---------- 失败归因 ----------
 
 const byReason = new Map();
-for (const r of results) {
+for (const r of counted) {
   if (r.status === 'pass') continue;
   const key = r.reason;
   if (!byReason.has(key)) byReason.set(key, { reason: key, count: 0, labels: new Map() });
@@ -260,14 +337,17 @@ const reasons = [...byReason.values()].sort((a, b) => b.count - a.count);
 // ---------- 输出 ----------
 
 const pct = (n, d) => (d ? ((n / d) * 100).toFixed(1) + '%' : '—');
-const total = results.length;
-const pass = results.filter((r) => r.status === 'pass').length;
+const total = counted.length;
+const pass = counted.filter((r) => r.status === 'pass').length;
 const fail = total - pass;
 
 console.log('DMN TCK · FEEL-only（B 口径）· 官方 79 个 FEEL label');
 console.log(`  cases: ${path.relative(process.cwd(), CASES)}   引擎: dist/（含 temporal 档）`);
 console.log('');
-console.log(`  断言 ${total}   ✓ ${pass} (${pct(pass, total)})   ✗ ${fail}`);
+console.log(
+  `  断言 ${total}   ✓ ${pass} (${pct(pass, total)})   ✗ ${fail}` +
+    (ignoredCount ? `   ⊘ IGNORED ${ignoredCount}` : ''),
+);
 console.log(`  ├ 严格口径（官方 errorResult，必须抛错）: ${strictPass}/${total} (${pct(strictPass, total)})`);
 console.log(`  └ 宽松口径（上游私有规则，仅与 92.6% 对照）: ${loosePass}/${total} (${pct(loosePass, total)})`);
 

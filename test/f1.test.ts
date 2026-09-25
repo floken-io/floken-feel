@@ -127,15 +127,31 @@ describe('floken-feel · F1 上下文语义', () => {
 describe('floken-feel · F1 新增内置函数', () => {
   it('product / stddev', () => {
     expect(evaluate('product([2, 3, 4])').value).toBe(24);
-    expect(evaluate('product([])').value).toBe(null);
     expect(evaluate('stddev([1, 2, 3, 4])').value).toBeCloseTo(1.2909944487358056, 10);
-    expect(evaluate('stddev([1])').value).toBe(null); // n < 2 不可算
+    /*
+     * 空列表 / 样本数不足 → **抛**（不是 null）。TCK 官方把这些标 `errorResult`：
+     * `product([])`（0094#002）、`stddev([])`（0063#007）都是 error；
+     * 而 `median([])`（0061#007）官方期望却是 `null` —— 差别是**有没有定义**，
+     * 不是"空列表一律 null"。口径见 `AGENTS.md` §5：内置函数无定义 → 抛。
+     */
+    const code = (src: string): string | null => {
+      try {
+        evaluate(src);
+        return null;
+      } catch (e) {
+        return (e as { code?: string }).code ?? null;
+      }
+    };
+    expect(code('product([])')).toBe('FEEL_EVAL_UNDEFINED');
+    expect(code('stddev([1])')).toBe('FEEL_EVAL_UNDEFINED');
+    expect(evaluate('median([])').value).toBe(null);
   });
 
   it('mode（众数，可能多个）', () => {
     expect(evaluate('mode([1, 1, 2, 2, 3])').value).toEqual([1, 2]);
     expect(evaluate('mode([7])').value).toEqual([7]);
-    expect(evaluate('mode([])').value).toBe(null);
+    // 空列表的众数是**空列表**，不是 null（TCK 0062#007 明确期望 `[]`）
+    expect(evaluate('mode([])').value).toEqual([]);
   });
 
   it('context / context put / context merge', () => {

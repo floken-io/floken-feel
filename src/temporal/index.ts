@@ -250,7 +250,52 @@ function wrap(
   // 可选字段按需挂（`exactOptionalPropertyTypes` 下不能显式写 undefined）
   const order = orderOf(kind, obj, iso);
   const withOrder: FeelTemporal = order === undefined ? base : { ...base, order };
-  return src === undefined ? withOrder : { ...withOrder, src };
+  const withPlus: FeelTemporal = { ...withOrder, plus: (d, sign) => shiftByDuration(withOrder, d, sign) };
+  // 只有 `date` 有"下一天"这个自然步长（`date and time` / `time` / duration 没有，
+  // 故 `for i in @d1..@d2` 对它们应当报错，TCK 0084#020/#021/#022）
+  const withStep =
+    kind === 'date'
+      ? { ...withPlus, plusDays: (days: number) => shiftDays(withPlus, days) }
+      : withPlus;
+  return src === undefined ? withStep : { ...withStep, src };
+}
+
+/**
+ * 按天平移一个 `date`（迭代序列用，TCK 0084#017/#018）。
+ * 走 Temporal 的 `add({ days })`，不自研日历算法（NFR-F11）。
+ */
+function shiftDays(date: FeelTemporal, days: number): Value {
+  const T = getTemporal();
+  const raw = date.raw as { add?: (d: { days: number }) => unknown } | null;
+  if (!T || !raw?.add) return null;
+  try {
+    return wrap('date', raw.add({ days }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 时间算术：`date ± duration` / `time ± duration` / `date and time ± duration`
+ * （DMN 1.4 §10.3.2.4，TCK 0096/0097 的 `date_input_001+@"P1D"` 即此）。
+ *
+ * 底层直接交给 Temporal 的 `add` / `subtract`，**偏移/时区原样保留**
+ * （故沿用基准值的 zone，而不是从新串里重解析）。
+ * 组合不可表示（如 `PlainDate + PT1H`）时 Temporal 抛 `RangeError` → 转成 `null`。
+ */
+function shiftByDuration(base: FeelTemporal, dur: FeelTemporal, sign: 1 | -1): Value {
+  if (!isTemporal(dur) || dur.kind !== 'duration') return null;
+  const raw = base.raw as { add?: (d: unknown) => unknown; subtract?: (d: unknown) => unknown };
+  const apply = sign === 1 ? raw?.add : raw?.subtract;
+  if (typeof apply !== 'function') return null;
+  let next: unknown;
+  try {
+    next = apply.call(raw, dur.raw);
+  } catch {
+    return null;
+  }
+  if (next === null || next === undefined) return null;
+  return wrap(base.kind, next, undefined, parseZone(base.src));
 }
 
 /** 相等键里的时区标记：`Z` 与 `+00:00` 归一，`+0500` 补冒号；无则空串 */
@@ -369,6 +414,56 @@ function propGetter(key: string): NativeFn {
     if (raw === null || raw === undefined) return null;
     const val = raw[key];
     return typeof val === 'number' ? val : null;
+  };
+}
+
+/** 英文星期名（DMN 1.4 §10.3.4.3：`day of week` 返回**名字**，索引 = `dayOfWeek` − 1） */
+const DAY_NAMES = [
+  'Monday',
+  'Tuesday',
+  'Wednesday',
+  'Thursday',
+  'Friday',
+  'Saturday',
+  'Sunday',
+] as const;
+
+/** 英文月份名（同 §10.3.4.3：`month of year` 返回**名字**，索引 = `month` − 1） */
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+] as const;
+
+/**
+ * 日期分量函数的共用骨架（DMN 1.4 §10.3.4.3）：
+ * `day of year` / `week of year` / `day of week` / `month of year`。
+ *
+ * 唯一形参 `date` **必须是 date 或 date and time** —— `null` / 字符串 / 数字 /
+ * `time` / duration 一律是**类型错误（抛）**。这与同名的路径属性（`date.day`）
+ * 那族「读不到就给 null」是两回事：TCK 0095~0098 的 `null_00x` 全是
+ * `errorResult="true"`，返回 null 在本口径下就是失败。
+ *
+ * `day of week` / `month of year` 返回**英文名**而非数字，`week of year` 是
+ * **ISO 周**（`2003-12-29` → 1、`2005-01-01` → 53），`temporal-polyfill` 的
+ * `dayOfWeek` / `weekOfYear` / `dayOfYear` 恰好同口径，直接透传。
+ */
+function datePartFn(name: string, pick: (raw: any) => Value): NativeFn {
+  return (args) => {
+    requireArity(args, name, 1);
+    const v = args[0] ?? null;
+    const t = asDateLike(v);
+    if (!t) throw argTypeError(name, 'date', 'date or date and time', feelTypeName(v));
+    return pick(t.raw);
   };
 }
 
@@ -1113,14 +1208,16 @@ function localPlain(T: TemporalNS, d: Date, kind: FeelTemporal['kind']): FeelTem
 export const TEMPORAL_BUILTINS: Record<string, NativeFn> = {
   /** `@"…"` 字面量的类型分派（key 不是合法 FEEL 函数名，故用户无法手写调用） */
   '@': atLiteralFn(),
-  now: (_args, _ctx, rt) => {
+  now: (args, _ctx, rt) => {
+    requireArity(args, 'now', 0);
     const T = getTemporal();
     if (!T) return null;
     if (rt?.clock) return localPlain(T, nowDate(rt), 'dateTime');
     if (!T?.Now?.plainDateTimeISO) return null;
     return wrap('dateTime', T.Now.plainDateTimeISO());
   },
-  today: (_args, _ctx, rt) => {
+  today: (args, _ctx, rt) => {
+    requireArity(args, 'today', 0);
     const T = getTemporal();
     if (!T) return null;
     if (rt?.clock) return localPlain(T, nowDate(rt), 'date');
@@ -1158,6 +1255,21 @@ export const TEMPORAL_BUILTINS: Record<string, NativeFn> = {
   year: propGetter('year'),
   month: propGetter('month'),
   day: propGetter('day'),
+  // 日期分量函数（DMN 1.4 §10.3.4.3）—— 多词名已登记进 core/spaced-names
+  'day of year': datePartFn('day of year', (raw) =>
+    typeof raw?.dayOfYear === 'number' ? raw.dayOfYear : null,
+  ),
+  'week of year': datePartFn('week of year', (raw) =>
+    typeof raw?.weekOfYear === 'number' ? raw.weekOfYear : null,
+  ),
+  'day of week': datePartFn('day of week', (raw) => {
+    const d = raw?.dayOfWeek;
+    return typeof d === 'number' && d >= 1 && d <= 7 ? (DAY_NAMES[d - 1] ?? null) : null;
+  }),
+  'month of year': datePartFn('month of year', (raw) => {
+    const m = raw?.month;
+    return typeof m === 'number' && m >= 1 && m <= 12 ? (MONTH_NAMES[m - 1] ?? null) : null;
+  }),
   hour: propGetter('hour'),
   minute: propGetter('minute'),
   second: propGetter('second'),

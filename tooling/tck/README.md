@@ -68,16 +68,31 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
 | **R4** | 非 `FeelError` 异常 | 单记 `unexpected-error`：那是引擎崩溃，不是"规范判定为错误" |
 | **R5** | 时钟固定注入 | `clock = 2026-05-12T00:00:00Z`，保证可复现（NFR-F3） |
 
-## 五、当前成绩（2026-09-25 晚，F3 第四轮）
+## 五、当前成绩（2026-09-26 凌晨，F3 第五轮）
 
 ```
-断言 2053   ✓ 1873 (91.2%)   ✗ 180
-├ 严格口径（官方 errorResult）: 1751/2053 (85.3%)
-└ 宽松口径（上游私有规则，仅对照）: 1873/2053 (91.2%)
-79 组中 50 组 100%
+断言 2053   ⊘ IGNORED 54   → 计入 1999
+断言 1999   ✓ 1990 (99.5%)   ✗ 9
+├ 严格口径（官方 errorResult）: 1926/1999 (96.3%)
+└ 宽松口径（上游私有规则，仅对照）: 1990/1999 (99.5%)
+79 组中 73 组 100%
 ```
 
-失败归因（条数）：`mismatch` 80 / `threw` 61 / `expected-error-got-value` 37 / `harness-error` 2。
+失败归因（条数）：`mismatch` 9（4 组）。
+
+**IGNORED 登记（NFR-F14，见 `tooling/tck/ignored.json`，理由逐条写死）**：
+- `0076-feel-external-java`（18）：`external {java: …}` 的 Java 绑定要 JVM + 宿主类路径；
+- `0082-feel-coercion`（36）：考的是 **DMN 声明类型层**的强制转换（decision/BKM 的 `typeRef`
+  含 `lambda_number_returns_number` 这类函数型，与结果值/实参值之间的校验与强转，
+  以及 decisionService 调用）。FEEL 表达式引擎没有"decision 的声明类型"这一层，职责在 `floken-dmn`。
+
+**剩余 9 条**：
+- 6 条 = **已知 gap**，9 位年份（`1115#015/#016/#029/#030`、`1117#027/#028`）超出
+  `temporal-polyfill` 可表示范围（±275760），记 `known-gaps`：给 `null`，不抛错；
+- `0092#009`（`{a: 10, "": expr}` 的"结果条目"约定，`0057#007` 的 `{"": "foo"}` 却期望原上下文 —— 官方自相矛盾）、
+  `0092#013`（decisionService 调用，属 DMN 层）；
+- `1111#K2-MatchesFunc-1`（`matches("hello world","hello\ sworld","x")` 期望 true —— 按 XPath，
+  x 模式下 `\ ` 是**字面空格**，应为 false；此处 TCK 与规范冲突，我们**从规范**）。
 
 **已修（按轮次；轮次口径与 `项目实施记录/2026-09-25.md` 一致）**：
 - 首轮：temporal 档 import 即注册（+176）、指数记法 `1.23e4`（+139）、
@@ -109,6 +124,21 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
   路径式 `context put`（中间层必须是已存在的上下文）、`context`/`context merge` 收单上下文并强转、
   重复键报错（`{a:1,a:2}` 与 `context([{key:"a",…},{key:"a",…}])`）、
   语境键允许额外字符（`foo+bar`，取冒号前原始源码）、`string join` 只收字符串列表。
+
+- **第五轮（迭代序列 + 正则方言 + 模型可调用体，1873 → 1990）**：
+  ① **`for` 的裸序列** `for i in 2..4`（新 `Node.seq` 判别位）：序列可降、区间 `[2..1]` 无效 → 抛；
+     日期按天步进（`plusDays` 钩子），string / date-time / time / duration **没有自然步长** → 抛；
+     `partial` 绑定已算出的前缀；后一个迭代变量必须能看到前一个（`for x in …, y in x`）。
+  ② **正则方言**（`src/builtins/string.ts`）：恒加 `u`（`i` 才是 Unicode 全折叠，
+     `matches("\u212A","k","i")` = true）；`x` 自由空格（转义空白落 `\x20`，因为 `u` 下 `\ ` 非法）；
+     字符类减法 `[A-Z-[OI]]` → 只在真出现时才切 JS `v` 模式；块属性 `\p{IsBasicLatin}` → `\p{ASCII}`
+     （BasicLatin 块 ≡ ASCII 二进制属性）；**flags 不认/实参非字符串/字符类内反向引用一律抛**（不再返回 null）。
+  ③ **跑分器补两处 DMN 宿主职责**（都是 harness 侧，不是引擎语义）：
+     绑定模型的**可调用体**（`businessKnowledgeModel` + 带 `formalParameter` 的 decision，TCK 0092）——
+     ⚠️ 形参只认 `encapsulatedLogic` 的**直接子节点**，否则 `bkm_004_1()` 会错成 `1 + null`；
+     以及把含空格的模型名登记进 `registerSpacedName`（`days in weekend`，TCK 0084#014）。
+  ④ 数值判等补**期望字面精度下限**（`exp(-1)` 官方只写 8 位小数，不是引擎算错）。
+  ⑤ **IGNORED 机制落地**：`tooling/tck/ignored.json` 登记整组 IGNORED，理由写死在文件里。
 
 **已知 gap（6 条，不打算修）**：`1115#015/#016/#029/#030`、`1117#027/#028` 用 9 位年份
 （`999999999`）—— 写法合法但超出 `temporal-polyfill` 可表示范围（±275760），记 `known-gaps`：

@@ -40,6 +40,16 @@ describe('floken-feel · TCK 修复回归 · 词法与字面量', () => {
 });
 
 describe('floken-feel · TCK 修复回归 · 区间（Range 一等公民）', () => {
+  /** 抛出的错误码；没抛返回 `null`（错误码在 `e.code` 上，不在 message 里） */
+  const code = (src: string): string | null => {
+    try {
+      evaluate(src);
+      return null;
+    } catch (e) {
+      return (e as { code?: string }).code ?? null;
+    }
+  };
+
   it('开闭括号四种写法，含 `)` 收尾（TCK 0068/0072）', () => {
     const r1 = evaluate('[1..10)').value;
     const r2 = evaluate('[1..10[').value;
@@ -49,15 +59,29 @@ describe('floken-feel · TCK 修复回归 · 区间（Range 一等公民）', ()
     expect(evaluate('[1..10) = [1..10[').value).toBe(true);
   });
 
-  it('无界区间：端点为 null 按「无界」处理，不再返回 null（TCK 0072 大项）', () => {
+  it('无界区间：前缀比较式是确定比较（TCK 0072 大项）', () => {
     expect(evaluate('1 in <= 10').value).toBe(true);
     expect(evaluate('10 in <= 10').value).toBe(true);
     expect(evaluate('11 in <= 10').value).toBe(false);
     expect(evaluate('10 in < 10').value).toBe(false);
     expect(evaluate('11 in >= 10').value).toBe(true);
     expect(evaluate('10 in > 10').value).toBe(false);
-    expect(evaluate('10 in (1..null]').value).toBe(true);
-    expect(evaluate('5 in [10..null)').value).toBe(false);
+  });
+
+  /*
+   * ⚠️ 端点**显式**写成 `null` 与前缀比较式是**两回事** —— 两者的 `from/to` 都是 null，
+   * 靠 `FeelRange.test` 判别位分开（TCK 0072 `null_001_a~d`）：
+   * · 前缀式 `(< 10)` 语义就是 `x < 10`，**确定**；
+   * · 显式 `(null..10]` 是"与 null 比大小"，无从判定 → `null`；
+   * · 显式 `[1..null]`（闭端点是 null）→ 无效区间 → **抛**。
+   */
+  it('显式 null 端点：开→null、闭→抛（TCK 0072 null_001_a~d）', () => {
+    expect(evaluate('5 in (null..10]').value).toBe(null);
+    expect(evaluate('5 in [1..null)').value).toBe(null);
+    for (const src of ['5 in [1..null]', '5 in [null..10]']) {
+      expect(code(src), src).toBe('FEEL_EVAL_ARG_TYPE');
+    }
+    expect(evaluate('10 in (< 10)').value).toBe(false); // 前缀式不受影响
   });
 
   it('一元测试写法 ≠ 同端点的显式区间（TCK 0068 用同一对端点钉死）', () => {
@@ -477,5 +501,151 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
     ]) {
       expect(err(src), src).not.toBeNull();
     }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+
+describe('floken-feel · TCK 修复回归 · 迭代序列与函数值（0084 / 0092）', () => {
+  const err = (src: string) => {
+    try {
+      evaluate(src);
+      return null;
+    } catch (e) {
+      return e as { code: string };
+    }
+  };
+  const v = (src: string) => evaluate(src).value;
+
+  /*
+   * `for i in 2..4` 里**裸**的 `a..b` 是**迭代序列**，不是区间字面量：
+   * 序列允许递减，而 `[2..1]`（区间、start > end）是无效区间 → 抛。
+   * 判别位是 `Node.seq`；两端都走 `parseExpression`，故 `1+1..1+3` 也成立。
+   */
+  it('裸序列可升可降；区间字面量 start > end 是错误（TCK 0084#007~#025）', () => {
+    expect(v('for i in 2..4 return i')).toEqual([2, 3, 4]);
+    expect(v('for i in 4..2 return i')).toEqual([4, 3, 2]);
+    expect(v('for i in 1..1 return i')).toEqual([1]);
+    expect(v('for i in 1+1..1+3 return i')).toEqual([2, 3, 4]);
+    expect(v('for i in 1..-1 return i')).toEqual([1, 0, -1]);
+    expect(err('for i in [2..1] return i')).not.toBeNull();
+  });
+
+  it('日期序列按天步进；string / date-time / time / duration 没有自然步长 → 抛', () => {
+    expect(evaluate('for i in @"1980-01-01"..@"1980-01-03" return string(i)').value).toEqual([
+      '1980-01-01',
+      '1980-01-02',
+      '1980-01-03',
+    ]);
+    expect(evaluate('for i in @"1980-01-03"..@"1980-01-01" return string(i)').value).toEqual([
+      '1980-01-03',
+      '1980-01-02',
+      '1980-01-01',
+    ]);
+    for (const src of [
+      'for i in "a".."z" return i',
+      'for i in ["a".."z"] return i',
+      'for i in @"1980-01-03T00:00:00"..@"1980-01-01T00:00:00" return i',
+      'for i in @"00:00:00"..@"00:00:00" return i',
+      'for i in @"P1D"..@"P2D" return i',
+    ]) {
+      expect(err(src), src).not.toBeNull();
+    }
+  });
+
+  /** `partial` = 已算出的前缀；`partial[-1]` 是上一个结果（阶乘，TCK 0084#013） */
+  it('`partial` 绑定已算出的前缀（TCK 0084#013）', () => {
+    expect(v('for i in 0..4 return if i = 0 then 1 else i * partial[-1]')).toEqual([1, 1, 2, 6, 24]);
+  });
+
+  /** 后一个迭代变量必须能看到前一个（`y in x`，TCK 0084#015） */
+  it('后一个迭代变量可见前一个（TCK 0084#015）', () => {
+    expect(v('for x in [[1,2],[3,4]], y in x return y')).toEqual([1, 2, 3, 4]);
+    expect(v('for x in [[1,2],[3,4]] return for y in x return y')).toEqual([
+      [1, 2],
+      [3, 4],
+    ]);
+  });
+
+  /** 带类型标注的函数字面量（DMN 1.4 §10.3.14，TCK 0092 / 0082） */
+  it('函数字面量的形参可带类型标注（只解析、不做静态检查）', () => {
+    expect(v('(function (a: number) 1 + a)(2)')).toBe(3);
+    // 两个形参都带标注；`+` 不是字符串拼接，故用 `=` 验参
+    expect(v('(function (a: string, b: string) a = b)("x", "x")')).toBe(true);
+    expect(v('(function (a: string, b: string) a = b)("x", "y")')).toBe(false);
+  });
+
+  /** 内置函数名本身是一个值，可当实参传（TCK 0092#014 的 `bkm_014_1(abs, sqrt)`） */
+  it('内置函数名可作为值传递', () => {
+    expect(v('(function(f, x) f(x))(abs, -3)')).toBe(3);
+    expect(v('abs(-3)')).toBe(3);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+
+describe('floken-feel · TCK 修复回归 · 正则方言（1111 / 1109）', () => {
+  const err = (src: string) => {
+    try {
+      evaluate(src);
+      return null;
+    } catch (e) {
+      return e as { code: string };
+    }
+  };
+  const v = (src: string) => evaluate(src).value;
+
+  /** `i` 必须按 Unicode 全折叠 —— 光有 JS 的 `i` 认不出 KELVIN SIGN */
+  it('`i` 走 Unicode 全折叠（TCK caselessmatch07）', () => {
+    expect(v('matches("K", "k", "i")')).toBe(true);
+    expect(v('matches("abc", "ABC", "i")')).toBe(true);
+    expect(v('matches("q", "[^Q]", "i")')).toBe(false);
+  });
+
+  /** 字符类减法 `[A-Z-[OI]]` → JS `v` 模式（只有真的出现减法时才切 `v`） */
+  it('字符类减法（TCK caselessmatch08~11）', () => {
+    expect(v('matches("x", "[A-Z-[OI]]", "i")')).toBe(true);
+    expect(v('matches("X", "[A-Z-[OI]]", "i")')).toBe(true);
+    expect(v('matches("O", "[A-Z-[OI]]", "i")')).toBe(false);
+    expect(v('matches("i", "[A-Z-[OI]]", "i")')).toBe(false);
+  });
+
+  it('`x` 自由空格模式：类外空白忽略、转义空白是字面空白', () => {
+    expect(v('matches("hello world", " hello[ ]world", "x")')).toBe(true);
+    expect(v('matches("hello world", "he ll o[ ]worl d", "x")')).toBe(true);
+    expect(v('matches("hello world", "hello\\x20world", "x")')).toBe(true);
+  });
+
+  /** `\p{IsBasicLatin}` 是块属性；JS 没有块名，映射到等价的二进制属性 ASCII */
+  it('块属性 `\\p{IsBasicLatin}`（TCK K2-MatchesFunc-5/6/7）', () => {
+    expect(v('matches("hello world", "\\p{ IsBasicLatin}+", "x")')).toBe(true);
+    expect(v('matches("hello world", "\\p{ I s B a s i c L a t i n }+", "x")')).toBe(true);
+    // 不带 `x` 时块名里的空格留着 → 认不出块 → 抛
+    expect(err('matches("hello world", "\\p{ IsBasicLatin}+")')).not.toBeNull();
+  });
+
+  it('flags 不认识 / 实参非字符串 / 字符类内反向引用 → 抛（不是返回 null）', () => {
+    for (const src of [
+      'matches("a", "b", "p")',
+      'matches("a", "b", " ")',
+      'matches("a", "b", "X")',
+      'matches("a", [])',
+      'matches("a", "b", [])',
+      'matches("a")',
+      'matches("a", "b", "c", "d")',
+      'matches("abcd", "(asd)[asd\\0]")',
+      'matches("h", "(.)\\3")',
+    ]) {
+      expect(err(src), src).not.toBeNull();
+    }
+    expect(v('matches("abracadabra", "bra", null)')).toBe(true);
+  });
+
+  /** `replace` 替换**全部**匹配（JS 的字符串模式只换第一处，TCK 1109#008） */
+  it('`replace` 默认全局替换；`$0` 是整个匹配', () => {
+    expect(v('replace("abracadabra","bra","*")')).toBe('a*cada*');
+    // `.` 是正则元字符（匹配任意字符），要字面点得写 `\.`
+    expect(v('replace("a.c", "\\.", "[$0]")')).toBe('a[.]c');
+    expect(v('replace("aaa", "a", "b")')).toBe('bbb');
   });
 });

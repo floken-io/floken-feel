@@ -105,6 +105,18 @@ export interface FeelTemporal {
    * `kind` 为 date/time/dateTime 时留空 —— 那些按 `iso` 排序即可。
    */
   readonly order?: number;
+  /**
+   * **时间算术钩子**（可选，由 `./temporal` 档生成）—— `date ± duration` 一类
+   * （DMN 1.4 §10.3.2.4）。核心不认识 Temporal，只在二元运算里发现有一侧是时间值
+   * 时调它，`sign` 为 `1`（加）或 `-1`（减）；无从计算时返回 `null`。
+   */
+  readonly plus?: (duration: FeelTemporal, sign: 1 | -1) => Value;
+  /**
+   * **按天步进钩子**（可选，由 `./temporal` 档生成）—— 迭代序列 `for i in @d1..@d2` 用
+   * （TCK 0084#017/#018）。只有 `date` 有：日期有自然的"下一天"，
+   * 而 `date and time` / `time` / `duration` **没有**自然步长，故 TCK 判它们为错误。
+   */
+  readonly plusDays?: (days: number) => Value;
 }
 
 /** FEEL context：键值集合，键可含空格（如 "Mike's daughter"）。 */
@@ -302,6 +314,12 @@ export type Node =
       toInclusive: boolean;
       /** 前缀写法（`(< 10)` 等）时的运算符；显式区间写法缺省。见 `FeelRange.test` */
       test?: string;
+      /**
+       * 迭代子句里的**裸序列** `for i in 2..4`（`seq: true`）—— 它与区间字面量
+       * `[2..4]` 的区别只有一处：序列允许**递减**（`4..2` → `[4,3,2]`），
+       * 而区间要求 `start <= end`，否则是**无效区间**（TCK 0084#025 的 `[2..1]` → 错误）。
+       */
+      seq?: boolean;
       start: number;
       end: number;
     }

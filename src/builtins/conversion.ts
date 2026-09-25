@@ -6,8 +6,8 @@
  */
 
 import { isContext, isList, isTemporal, isRange, type Value } from '../core/types.js';
-import { argCountError } from '../core/errors.js';
-import { toNumber } from '../core/values.js';
+import { argCountError, argTypeError, undefinedResultError } from '../core/errors.js';
+import { feelTypeName, toNumber } from '../core/values.js';
 import type { NativeFn } from '../core/types.js';
 
 /**
@@ -58,10 +58,81 @@ export function feelString(v: Value): string | null {
   return null;
 }
 
+/**
+ * 取一个**分隔符**实参：`null` 合法（表示"没有这一位"），其余必须是字符串。
+ * TCK 0058 把 `number("…", 123, ".")` 标成 `errorResult`，故数字分隔符是类型错误。
+ */
+function reqSeparator(v: Value, fnName: string, param: string): string | null {
+  if (v === null) return null;
+  if (typeof v !== 'string') throw argTypeError(fnName, param, 'string', feelTypeName(v));
+  return v;
+}
+
+/**
+ * 按分组符 / 小数符解析一个"人写的"数字串（DMN 1.4 §10.3.3.2 的 `number`）。
+ *
+ * 口径（TCK 0058 的 21 条逐条钉死）：
+ * - **小数符为 `null` 时按 `.` 处理** —— `number("1,000,000.00", ",", null)` = 1000000
+ *   （小数位显式写 `.` 仍要能认出来）；
+ * - 小数符最多出现一次，多余 → 失败；
+ * - 分组符必须**夹在数字之间**（`1,000,000` 合法；`1,000,000.01` 用 `" "` 作分组符则失败，
+ *   因为剩下的 `,` 不是合法字符）；
+ * - 任一步失败 → **抛错**（0058 里失败例全是 `errorResult`，没有"给 null"的读法）。
+ */
+function parseFormatted(raw: string, group: string | null, dec: string | null): number | null {
+  const sep = dec === null || dec === '' ? '.' : dec;
+  let intPart = raw;
+  let fracPart: string | null = null;
+  const at = raw.indexOf(sep);
+  if (at >= 0) {
+    if (raw.indexOf(sep, at + sep.length) >= 0) return null; // 多个小数分隔符
+    intPart = raw.slice(0, at);
+    fracPart = raw.slice(at + sep.length);
+  }
+  if (group !== null && group !== '') {
+    // 逐段校验：分组符两侧都必须有数字，且不能出现在首尾或连续出现
+    const parts = intPart.split(group);
+    if (parts.some((p) => p === '' || !/^[0-9]+$/.test(p))) return null;
+    intPart = parts.join('');
+  }
+  const normalized = fracPart === null ? intPart : `${intPart}.${fracPart}`;
+  if (!/^[+-]?[0-9]+(\.[0-9]+)?$/.test(normalized)) return null;
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
+
 export const CONVERSION_BUILTINS: Record<string, NativeFn> = {
   string: (a) => {
     if (a.length !== 1) throw argCountError('string', 1, a.length);
     return feelString(a[0] ?? null);
   },
-  number: (a) => toNumber(a[0] ?? null),
+  /**
+   * `number(from[, grouping separator, decimal separator])`。
+   *
+   * ⚠️ 位置顺序是 **(from, 分组符, 小数符)** —— `number("1.000.000,01", ".", ",")` = 1000000.01。
+   * 只给 `from` 或三个都给，**给两个是签名错误**（0058#016）。
+   */
+  number: (a) => {
+    if (a.length !== 1 && a.length !== 3) throw argCountError('number', [1, 3], a.length);
+    const from = a[0] ?? null;
+    if (typeof from !== 'string') {
+      throw argTypeError('number', 'from', 'string', feelTypeName(from));
+    }
+    if (a.length === 1) return toNumber(from);
+    const group = reqSeparator(a[1] ?? null, 'number', 'grouping separator');
+    const dec = reqSeparator(a[2] ?? null, 'number', 'decimal separator');
+    if (group !== null && dec !== null && group === dec) {
+      throw argTypeError(
+        'number',
+        'decimal separator',
+        'string different from grouping separator',
+        dec,
+      );
+    }
+    const n = parseFormatted(from, group, dec);
+    if (n === null) {
+      throw undefinedResultError('number', { from, groupingSeparator: group, decimalSeparator: dec });
+    }
+    return n;
+  },
 };

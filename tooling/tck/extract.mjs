@@ -68,7 +68,18 @@ function expressionOf(node) {
     }
     case 'list': {
       const items = node.children.filter((c) => c.local === 'item');
-      return `[${items.map((i) => expressionOf(firstExpressionChild(i)) ?? 'null').join(', ')}]`;
+      if (items.length > 0) {
+        return `[${items.map((i) => expressionOf(firstExpressionChild(i)) ?? 'null').join(', ')}]`;
+      }
+      /*
+       * 决策体**本身就是** `<list>` 时，子节点是各盒装表达式（`<literalExpression>`…），
+       * 没有 `<item>` 包裹 —— 这是「一个表达式」而不是「一个列表值」。
+       * 不补这条规则会抽成 `[]`（TCK 0098 `date_008` 曾因此假失败）。
+       */
+      const parts = node.children
+        .filter((c) => !NON_EXPRESSION.has(c.local))
+        .map((c) => expressionOf(c) ?? 'null');
+      return `[${parts.join(', ')}]`;
     }
     case 'item':
       return expressionOf(firstExpressionChild(node));
@@ -144,6 +155,38 @@ function collectDecisions(dmnSource) {
     map.set(name, { source: expressionOf(exprNode), deps });
   }
   return map;
+}
+
+/**
+ * 抽 DMN 模型的**可调用体**（TCK 0092 的 lambda 用例全靠它）：
+ * `businessKnowledgeModel`，以及**直接挂 `formalParameter`** 的 decision。
+ *
+ * ⚠️ 形参只认 `encapsulatedLogic` 的**直接子节点** `<formalParameter>`，这一点是 XSD 定的：
+ * `encapsulatedLogic` 本身是 `tFunctionDefinition`（`formalParameter*` + `expression`）。
+ * 于是 `bkm_004_1` 的 `<encapsulatedLogic><functionDefinition>…</functionDefinition>` 里，
+ * `a` 属于**内层函数**、BKM 自己**零形参** —— `bkm_004_1()` 先取到函数值、再由 `(5)` 调用 → 6。
+ * 若误把内层形参当成 BKM 的形参，这条就会变成 `1 + null`。
+ */
+function collectInvocables(dmnSource) {
+  const tree = parseTree(dmnSource);
+  const out = [];
+  const add = (name, logic) => {
+    const params = logic.children
+      .filter((c) => c.local === 'formalParameter')
+      .map((p) => ({ name: p.attrs.name ?? '', typeRef: p.attrs.typeRef ?? '' }))
+      .filter((p) => p.name !== '');
+    const source = expressionOf(firstExpressionChild(logic));
+    if (name && source != null) out.push({ name, params, source });
+  };
+  for (const bkm of findAll(tree, 'businessKnowledgeModel')) {
+    const logic = bkm.children.find((c) => c.local === 'encapsulatedLogic');
+    if (logic) add(bkm.attrs.name ?? '', logic);
+  }
+  for (const d of findAll(tree, 'decision')) {
+    if (!d.children.some((c) => c.local === 'formalParameter')) continue;
+    add(d.attrs.name ?? '', d);
+  }
+  return out;
 }
 
 /** 按依赖序展开某 decision 依赖的其他 decision（去重，被依赖者在前） */
@@ -295,7 +338,7 @@ const valueSource = srcOf;
 
 // ---------- testCase → 断言 ----------
 
-function collectCases(testSource, decisions, label) {
+function collectCases(testSource, decisions, label, invocables = []) {
   const cases = [];
   const gaps = [];
   const tree = parseTree(testSource);
@@ -323,6 +366,7 @@ function collectCases(testSource, decisions, label) {
         decision,
         context,
         deps: depChain(decision, decisions),
+        invocables,
         expected,
         errorResult: resultNode.attrs.errorResult === 'true',
       };
@@ -368,7 +412,12 @@ for (const g of groups) {
   const decisions = collectDecisions(dmnSource);
   const itemDefs = collectItemDefinitions(dmnSource);
   if (Object.keys(itemDefs).length) typesByModel[dmnName] = itemDefs;
-  const { cases, gaps } = collectCases(fs.readFileSync(path.join(g.dir, testName), 'utf8'), decisions, g.label);
+  const { cases, gaps } = collectCases(
+    fs.readFileSync(path.join(g.dir, testName), 'utf8'),
+    decisions,
+    g.label,
+    collectInvocables(dmnSource),
+  );
   allCases.push(...cases);
   allGaps.push(...gaps);
   labels.push({

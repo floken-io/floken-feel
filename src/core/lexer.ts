@@ -63,16 +63,50 @@ const KEYWORDS = new Set([
  */
 const MULTI_OPS = ['**', '->', '!=', '<=', '>=', '=', '<', '>', '+', '-', '*', '/'];
 
-const NAME_START = /[A-Za-z_]/;
+const NAME_START = /[A-Za-z_]|[^\x00-\x7F]/;
 /**
  * 名字后续字符 = 字母数字下划线 + FEEL `additional name symbols` 里的 `'` 与 `^`。
  * 于是 `Mike's daughter` 这种带撇号的名字可被并入同一名字（空格由 `name-merge` 处理）。
  *
  * ⚠️ 有意偏离：FEEL 的 additional name symbols 还含 `- + * / .`，但那会与算术/路径语义
  * 直接冲突（`a-b` 究竟是一个名字还是减法），floken 保留其运算语义。偏离已登记在 AGENTS.md。
+ *
+ * **非 ASCII 一律算名字字符**（`[^\x00-\x7F]` 覆盖代理对的每一半）：FEEL 的名字是
+ * Unicode 字母，中文变量名与 emoji 键（TCK 0083 的 `{🐎: "bar"}`）都必须能进 token 流。
  */
-const NAME_PART = /[A-Za-z0-9_'^]/;
+const NAME_PART = /[A-Za-z0-9_'^]|[^\x00-\x7F]/;
 const DIGIT = /[0-9]/;
+
+/**
+ * 解一个反斜杠转义，返回 `{ text, width }`（`width` = 整个转义序列的字符数，含反斜杠）。
+ *
+ * FEEL 规范只写明 `\"` 与 `\\`，其余是实现自由；TCK 0083 要求额外支持 Unicode 转义：
+ * - `\uXXXX`：4 位十六进制（大小写均可）
+ * - `\UXXXXXX`：**6 位**（XPath 口径；`\U01F40E` = U+1F40E = 🐎）
+ * - `\n` `\t` `\r`
+ *
+ * 代理对（`\uD83D\uDCA9`）由两次调用各产出一个 code unit，在 JS 串里自然合成一个码点 ——
+ * 故 `[...s].length` 得 1，与 TCK 的 `string length` 期望一致。
+ * 认不出的转义**保留反斜杠**（`\s` → `\s`）—— FEEL/XPath 的正则串把 `\d` `\s` `\p{…}`
+ * 原样交给正则引擎，抹掉反斜杠会把 `split("John Doe", "\s")` 变成按 `s` 切分（TCK 0067#001）。
+ */
+function decodeEscape(src: string, i: number): { text: string; width: number } {
+  const nxt = src.charAt(i + 1);
+  if (nxt === 'u' || nxt === 'U') {
+    const width = nxt === 'u' ? 4 : 6;
+    const hex = src.slice(i + 2, i + 2 + width);
+    if (hex.length === width && /^[0-9A-Fa-f]+$/.test(hex)) {
+      return { text: String.fromCodePoint(Number.parseInt(hex, 16)), width: 2 + width };
+    }
+  }
+  if (nxt === 'n') return { text: '\n', width: 2 };
+  if (nxt === 't') return { text: '\t', width: 2 };
+  if (nxt === 'r') return { text: '\r', width: 2 };
+  if (nxt === '"') return { text: '"', width: 2 };
+  if (nxt === '\\') return { text: '\\', width: 2 };
+  if (nxt === '') return { text: '\\', width: 1 };
+  return { text: `\\${nxt}`, width: 2 };
+}
 
 export function tokenize(src: string): Token[] {
   const tokens: Token[] = [];
@@ -90,7 +124,7 @@ export function tokenize(src: string): Token[] {
       continue;
     }
 
-    // 注释 // ... 到行尾
+    // 注释 // … 到行尾
     if (ch === '/' && peek(1) === '/') {
       const start = i;
       while (i < len && src.charAt(i) !== '\n') i += 1;
@@ -98,8 +132,20 @@ export function tokenize(src: string): Token[] {
       continue;
     }
 
-    // 数字（含小数与指数记法）
-    if (DIGIT.test(ch)) {
+    // 块注释 /* … */（可跨行，TCK 0073）。与 `//` 一样产出 comment token，
+    // 供高亮使用；语法层统一在 parse 前过滤掉（见 parser.ts 头部）。
+    if (ch === '/' && peek(1) === '*') {
+      const start = i;
+      i += 2;
+      while (i < len && !(src.charAt(i) === '*' && src.charAt(i + 1) === '/')) i += 1;
+      i = i < len ? i + 2 : len;
+      tokens.push({ type: 'comment', value: src.slice(start, i), start, end: i });
+      continue;
+    }
+
+    // 数字：`0.5` / `125.43` / `1.23e4`，以及**省略整数部分的 `.872`**（TCK 0101）。
+    // 判据是"点后紧跟数字" —— 故 `a.b`（路径）与 `1..5`（区间）都不会被误吞。
+    if (DIGIT.test(ch) || (ch === '.' && DIGIT.test(peek(1)))) {
       const start = i;
       while (i < len && DIGIT.test(src.charAt(i))) i += 1;
       if (src.charAt(i) === '.' && DIGIT.test(src.charAt(i + 1))) {
@@ -169,14 +215,9 @@ export function tokenize(src: string): Token[] {
       while (i < len) {
         const c = src.charAt(i);
         if (c === '\\') {
-          const nxt = src.charAt(i + 1);
-          i += 2;
-          if (nxt === 'n') out += '\n';
-          else if (nxt === 't') out += '\t';
-          else if (nxt === 'r') out += '\r';
-          else if (nxt === '"') out += '"';
-          else if (nxt === '\\') out += '\\';
-          else if (nxt !== undefined) out += nxt;
+          const esc = decodeEscape(src, i);
+          out += esc.text;
+          i += esc.width;
           continue;
         }
         if (c === '"') {

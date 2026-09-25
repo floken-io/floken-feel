@@ -41,6 +41,16 @@ export const SPACED_NAMES: Set<string> = new Set([
   // 时间（实现见 ./temporal）
   'date and time',
   'years and months duration',
+  /*
+   * 日期分量函数（DMN 1.4 §10.3.4.3）。
+   * 这四组的中间词恰好是关键字 `of`，而 `name-merge` **只在整体命中本表时**
+   * 才允许吸收关键字（规则 1），故必须显式登记，否则 `day of year(...)` 会在
+   * `of` 处报 `FEEL_SYNTAX_UNEXPECTED_TOKEN`。
+   */
+  'day of year',
+  'week of year',
+  'day of week',
+  'month of year',
   // 类型名（`instance of days and time duration`，DMN 1.4 §10.3.5）
   'days and time duration',
 ]);

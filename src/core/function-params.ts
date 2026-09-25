@@ -46,7 +46,13 @@ const PARAMS: Record<string, readonly ParamSlot[]> = {
   log: ['number'],
   exp: ['number'],
   modulo: ['dividend', 'divisor'],
-  number: ['from', 'decimal separator', 'grouping separator'],
+  /*
+   * ⚠️ 位置顺序是 `(from, grouping separator, decimal separator)` ——
+   * **分组符在前、小数符在后**（DMN 1.4 §10.3.3.2），TCK 0058 逐条钉死：
+   * `number("1.000.000,01", ".", ",")` = 1000000.01（`.` 分组、`,` 小数）。
+   * 曾按「decimal 在前」登记，位置调用能把结果凑对、命名调用却必然错位。
+   */
+  number: ['from', 'grouping separator', 'decimal separator'],
   // ---- 布尔 ----
   not: ['negand'],
   all: ['list'],
@@ -117,6 +123,10 @@ const PARAMS: Record<string, readonly ParamSlot[]> = {
   minute: ['time'],
   second: ['time'],
   weekday: ['date'],
+  'day of year': ['date'],
+  'week of year': ['date'],
+  'day of week': ['date'],
+  'month of year': ['date'],
 };
 
 /** 查某个函数的形参名表；未登记 → `null`（调用方据此判断"不支持命名参数"） */

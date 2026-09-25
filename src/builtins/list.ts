@@ -6,7 +6,7 @@
 
 import { isFunction, isList, type NativeFn, type Value } from '../core/types.js';
 import { compareValues, deepEquals, toNumber } from '../core/values.js';
-import { asList, EMPTY_CONTEXT } from './helpers.js';
+import { asList, EMPTY_CONTEXT, requireArity, spread, strictNumericList } from './helpers.js';
 
 export const LIST_BUILTINS: Record<string, NativeFn> = {
   // ----- 查询 -----
@@ -97,10 +97,15 @@ export const LIST_BUILTINS: Record<string, NativeFn> = {
     }
     return out;
   },
-  /** 众数：出现次数最多的值（可能多个；空列表 → null） */
+  /**
+   * 众数：出现次数最多的值，可能多个。TCK 0062 的三条口径：
+   * 结果**升序**（`mode([3,6,1,9,6,1,3])` = `[1, 3, 6]`）、空列表 → `[]`（不是 null）、
+   * 元素非数字 → 抛。变参形态 `mode(6, 3, 9, 6, 6)` 同 `spread`。
+   */
   mode: (a) => {
-    const list = asList(a[0] ?? null);
-    if (list === null || list.length === 0) return null;
+    requireArity(a, 'mode', 1, Infinity);
+    const list = strictNumericList(spread(a), 'mode');
+    if (list.length === 0) return [];
     const groups: { value: Value; count: number }[] = [];
     for (const v of list) {
       const hit = groups.find((g) => deepEquals(g.value, v));
@@ -108,7 +113,8 @@ export const LIST_BUILTINS: Record<string, NativeFn> = {
       else groups.push({ value: v, count: 1 });
     }
     const best = Math.max(...groups.map((g) => g.count));
-    return groups.filter((g) => g.count === best).map((g) => g.value);
+    const winners = groups.filter((g) => g.count === best).map((g) => g.value);
+    return winners.sort((x, y) => compareValues(x, y) ?? 0);
   },
   flatten: (a) => {
     const list = asList(a[0] ?? null);

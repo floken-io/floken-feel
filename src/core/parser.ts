@@ -222,12 +222,36 @@ class Parser {
   }
 
   private parseMultiplicative(): Node {
-    let left = this.parseUnary();
-    while (this.at('op', '*') || this.at('op', '/') || this.at('op', '**')) {
+    let left = this.parsePower();
+    while (this.at('op', '*') || this.at('op', '/')) {
       const opTok = this.advance();
+      const right = this.parsePower();
+      left = {
+        type: 'binary',
+        op: opTok.value as ArithOp,
+        left,
+        right,
+        start: left.start,
+        end: right.end,
+      };
+    }
+    return left;
+  }
+
+  /**
+   * 幂 `**`：**比 `*` `/` 紧、比一元 `-` 松、左结合**（TCK 0075 / 0105 逐条钉死）。
+   *
+   * - `5 + 2**5` = 37 → 幂高于加法；
+   * - `1.2*10**3` = 1200 → 幂高于乘法（否则会被读成 `(1.2*10)**3` = 1728）；
+   * - `-3 ** 2` = 9 → 一元负号先作用（`(-3)**2`），即幂**低于**一元；
+   * - `3 ** 4 ** 5` = `(3**4)**5` = 3486784401 → **左结合**（若右结合是 3^1024）。
+   */
+  private parsePower(): Node {
+    let left = this.parseUnary();
+    while (this.at('op', '**')) {
+      this.advance();
       const right = this.parseUnary();
-      const op = opTok.value === '**' ? '**' : (opTok.value as ArithOp);
-      left = { type: 'binary', op, left, right, start: left.start, end: right.end };
+      left = { type: 'binary', op: '**', left, right, start: left.start, end: right.end };
     }
     return left;
   }
@@ -426,6 +450,12 @@ class Parser {
       if (!this.at('rparen')) {
         do {
           params.push(this.expectName().value);
+          /*
+           * **形参类型标注** `function(a: number) a`（DMN 1.4 §10.3.14，TCK 0092/0082）。
+           * 标注在此**只解析不保留**：FEEL 的函数体本身不做静态类型检查，
+           * 类型由调用方（DMN 的 BKM 调用）在**调用时**校验，不是本层的事。
+           */
+          if (this.eat('colon')) this.parseTypeSpec();
         } while (this.eat('comma'));
       }
       this.expect('rparen');
@@ -686,8 +716,32 @@ class Parser {
     do {
       const nameTok = this.expectName();
       this.expect('kw', 'in');
-      const expr = this.parseExpression();
-      vars.push({ name: nameTok.value, expr });
+      const from = this.parseExpression();
+      /*
+       * `for i in 2..4 return i`：**裸** `a..b` 是迭代序列，不是区间字面量
+       * （TCK 0084#007）。语法层必须在这里接住 —— 表达式层不认 `..`，
+       * 否则 `2..4` 会被当成 `2` 后接一个悬空的 `..`（且 `for` 的 `return` 找不到）。
+       * 端点用 `parseAdditive`：`for i in 1+1..1+3`（#012）两端都是算术式。
+       */
+      if (this.at('range')) {
+        this.advance();
+        const to = this.parseExpression();
+        vars.push({
+          name: nameTok.value,
+          expr: {
+            type: 'range',
+            from,
+            to,
+            fromInclusive: true,
+            toInclusive: true,
+            seq: true,
+            start: from.start,
+            end: to.end,
+          },
+        });
+        continue;
+      }
+      vars.push({ name: nameTok.value, expr: from });
     } while (this.eat('comma'));
     return vars;
   }

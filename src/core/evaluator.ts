@@ -12,6 +12,7 @@ import { parseExpression, parseUnaryTests } from './parser.js';
 import { BUILTINS } from '../builtins/registry.js';
 import { TEMPORAL_FUNCTIONS, TEMPORAL_PROPERTIES } from './deferred.js';
 import {
+  argTypeError,
   FEEL_DIAGNOSTIC_CODES,
   FEEL_ERROR_CODES,
   diagnostic,
@@ -269,6 +270,25 @@ function num(v: Value, rt: FeelEvalRuntime | undefined): number | null {
   return toNumber(v);
 }
 
+/**
+ * `+` / `-` 的时间分支（DMN 1.4 §10.3.2.4）：`date ± duration`、`duration + date`。
+ *
+ * 返回 `undefined` 表示"不归时间管" —— 调用方落回数字分支（于是 `date - date`
+ * 这类没有定义的算式仍按类型不匹配处理，不会静默给错值）。
+ */
+function shiftTemporal(op: string, l: Value, r: Value): Value | undefined {
+  if (op !== '+' && op !== '-') return undefined;
+  const sign: 1 | -1 = op === '+' ? 1 : -1;
+  if (isTemporal(l) && isTemporal(r) && r.kind === 'duration' && l.plus) {
+    return l.plus(r, sign);
+  }
+  // 加法可交换：`duration + date` 与 `date + duration` 同值；减法没有这一支
+  if (sign === 1 && isTemporal(l) && isTemporal(r) && l.kind === 'duration' && r.plus) {
+    return r.plus(l, 1);
+  }
+  return undefined;
+}
+
 /** 形参缺省占位：命名参数只给了一部分时，缺的位置补 `null`（null 是 FEEL 一等值） */
 const NULL_NODE: Node = { type: 'lit', value: null, start: 0, end: 0 };
 
@@ -318,6 +338,21 @@ function reorderNamedArgs(
  * 分流点是 `FeelRange.test`（见 `core/types.ts`）。
  */
 function rangeMatch(range: FeelRange, value: Value): Value {
+  /*
+   * 端点**显式写成 `null`**（TCK 0072 `null_001_a~d`）时：
+   * - 端点为 null 且**闭** → 无效区间（闭端点是"包含某个值"，而 null 不是可比的值）→ 抛；
+   * - 端点为 null 且**开** → `x > null` 无从判定 → `null`（不是 false）。
+   *
+   * ⚠️ 必须与前缀比较式 `(< 10)` 分开 —— 它的 `from` 同样是 null，
+   * 但语义是 `x < 10`（DMN 1.4 §10.3.2.5），是**确定**的比较，不能降级成 null
+   * （`10 in (< 10)` = false）。判别位就是 `FeelRange.test`。
+   */
+  if (range.test === undefined && (range.from === null || range.to === null)) {
+    if ((range.from === null && range.fromInclusive) || (range.to === null && range.toInclusive)) {
+      throw argTypeError('in', 'range', 'range with non-null endpoints', 'range with a null endpoint');
+    }
+    return null;
+  }
   return range.test === undefined ? rangeContains(range, value) : rangeTestMatches(range, value);
 }
 
@@ -447,6 +482,15 @@ export function evaluateNode(
     case 'name': {
       if (ctx.has(node.name)) return ctx.get(node.name) ?? null;
       if (node.name === '?') return null;
+      /*
+       * **内置函数名本身是一个值**（TCK 0092#014 的 `bkm_014_1(abs, sqrt)`）：
+       * DMN 的内置函数就在作用域里，可以当参数传、可以赋给变量，不只是"能调用的语法"。
+       * 只在**变量未绑定**时兜 —— 宿主绑定的同名变量优先（可覆盖内置函数）。
+       */
+      const builtin = builtins[node.name];
+      if (builtin) {
+        return makeFunction(node.name, (args, callCtx) => builtin(args, callCtx, runtime));
+      }
       diag(warnings, FEEL_DIAGNOSTIC_CODES.EVAL_NO_VARIABLE, `Variable '${node.name}' not found`, node);
       return null;
     }
@@ -540,6 +584,13 @@ export function evaluateNode(
         return false;
       }
       if (isContext(domain)) {
+        /*
+         * 上下文域有两种含义，靠**被测试值的类型**分：
+         * - 值是字符串 → **键成员判定**（`"a" in {a: 1}` = true，floken 的扩展，见 test/f1）；
+         * - 否则 → 退回归「相等」（`{a:"foo"} in {a:"foo"}` = true，TCK 0072#context_011）。
+         *   理由：上下文的键**只可能是字符串**，非字符串值不可能是键，此时上下文就只是一个值。
+         */
+        if (typeof v !== 'string') return deepEquals(domain, v);
         const key = toStr(v);
         return key === null ? null : domain.has(key);
       }
@@ -689,8 +740,19 @@ export function evaluateNode(
     }
 
     case 'binary': {
-      const l = num(evaluateNode(node.left, ctx, warnings, builtins, runtime), runtime);
-      const r = num(evaluateNode(node.right, ctx, warnings, builtins, runtime), runtime);
+      const lv = evaluateNode(node.left, ctx, warnings, builtins, runtime);
+      const rv = evaluateNode(node.right, ctx, warnings, builtins, runtime);
+      /*
+       * 时间算术（`date ± duration`，DMN 1.4 §10.3.2.4）：只要有一侧是时间值，
+       * 先交给值上的钩子（`FeelTemporal.plus`，由 `./temporal` 档挂上）。
+       * 钩子返回 `undefined` 表示"这不是它能管的算式" → 落回数字分支报类型不匹配。
+       */
+      if (isTemporal(lv) || isTemporal(rv)) {
+        const shifted = shiftTemporal(node.op, lv, rv);
+        if (shifted !== undefined) return shifted;
+      }
+      const l = num(lv, runtime);
+      const r = num(rv, runtime);
       if (l === null || r === null) {
         diag(
           warnings,
@@ -770,7 +832,17 @@ export function evaluateNode(
 
     case 'for': {
       const combos = buildCombos(node.vars, ctx, warnings, builtins, runtime);
-      return combos.map((c) => evaluateNode(node.body, ctx.with(c), warnings, builtins, runtime));
+      /*
+       * `partial` = **已算出的前缀**（FEEL 的 partial results，TCK 0084#013 的
+       * `for i in 0..4 return if i = 0 then 1 else i * partial[-1]` → 阶乘）。
+       * 每轮取快照（`slice`），故循环内看到的永远是"之前的"，不会自我引用。
+       */
+      const out: Value[] = [];
+      for (const combo of combos) {
+        const scope = ctx.with({ ...combo, partial: out.slice() });
+        out.push(evaluateNode(node.body, scope, warnings, builtins, runtime));
+      }
+      return out;
     }
 
     case 'quantified': {
@@ -805,6 +877,63 @@ function scopeFor(ctx: FeelContext, el: Value): FeelContext {
 }
 
 /** 多变量迭代：笛卡尔积 */
+/**
+ * 把**区间**展开成迭代序列（`for i in 2..4`，TCK 0084）。
+ *
+ * 只有两类能展开：
+ * - 数字：步长 ±1。**递减只允许在裸序列**（`Node.seq`）里 —— `[2..1]` 是区间字面量，
+ *   `start > end` 属**无效区间**，官方标 `errorResult`（#025）；
+ * - 日期：步长 ±1 天（#017 升序、#018 降序）。
+ *
+ * 其余（字符串 / `date and time` / `time` / duration）**没有自然步长** → 抛（#019~#022）。
+ */
+function iterItems(range: FeelRange, seq: boolean): Value[] {
+  const from = range.from;
+  const to = range.to;
+  const bad = (expected: string, got: string): never => {
+    throw argTypeError('for', 'domain', expected, got);
+  };
+
+  if (typeof from === 'number' && typeof to === 'number') {
+    if (!Number.isInteger(from) || !Number.isInteger(to)) {
+      bad('range of integers', `${from}..${to}`);
+    }
+    if (from > to && !seq) bad('range with start <= end', `${from}..${to}`);
+    const step = from <= to ? 1 : -1;
+    const out: Value[] = [];
+    for (let n = from; step > 0 ? n <= to : n >= to; n += step) out.push(n);
+    return out;
+  }
+
+  if (
+    isTemporal(from) &&
+    isTemporal(to) &&
+    from.kind === 'date' &&
+    to.kind === 'date' &&
+    from.plusDays
+  ) {
+    const cmp = compareValues(from, to);
+    if (cmp === null) throw argTypeError('for', 'domain', 'range of comparable dates', 'date..date');
+    if (cmp > 0 && !seq) bad('range with start <= end', `${from.iso}..${to.iso}`);
+    const step = cmp <= 0 ? 1 : -1;
+    const out: Value[] = [from];
+    let cur: Value = from;
+    // 上界只是防御：端点固定且每次至少走一天，正常不会触发
+    for (let guard = 0; guard < 1_000_000; guard += 1) {
+      const next: Value = isTemporal(cur) ? (cur.plusDays?.(step) ?? null) : null;
+      if (next === null) break;
+      const c = compareValues(next, to);
+      if (c === null || (step > 0 ? c > 0 : c < 0)) break;
+      out.push(next);
+      cur = next;
+      if (c === 0) break;
+    }
+    return out;
+  }
+
+  return bad('list or range<number | date>', feelTypeName(range));
+}
+
 function buildCombos(
   vars: { name: string; expr: Node }[],
   ctx: FeelContext,
@@ -814,10 +943,20 @@ function buildCombos(
 ): Record<string, Value>[] {
   let combos: Record<string, Value>[] = [{}];
   for (const v of vars) {
-    const listValue = evaluateNode(v.expr, ctx, warnings, builtins, runtime);
-    const items = isList(listValue) ? listValue : [listValue];
     const next: Record<string, Value>[] = [];
+    /*
+     * 后一个迭代变量的**定义式必须能看到前一个变量**（FEEL 的 `for` 是嵌套笛卡尔积）：
+     * `for x in [[1,2],[3,4]], y in x return y` → `[1,2,3,4]`（TCK 0084#015）。
+     * 故在**每个已累积的绑定**下求值，而不是在原始 `ctx` 下。
+     */
     for (const combo of combos) {
+      const scope = ctx.with(combo);
+      const listValue = evaluateNode(v.expr, scope, warnings, builtins, runtime);
+      let items: readonly Value[];
+      if (isList(listValue)) items = listValue;
+      else if (isRange(listValue)) {
+        items = iterItems(listValue, v.expr.type === 'range' && v.expr.seq === true);
+      } else items = [listValue];
       for (const item of items) {
         next.push({ ...combo, [v.name]: item });
       }
