@@ -6,7 +6,9 @@
  */
 
 import { isList, type NativeFn, type Value } from '../core/types.js';
-import { toNumber, toStr } from '../core/values.js';
+import { argTypeError } from '../core/errors.js';
+import { feelTypeName, toNumber, toStr } from '../core/values.js';
+import { requireArity } from './helpers.js';
 
 /** 把 FEEL 的 1-based（可负）起点换算成 0-based 下标 */
 function toIndex(start: number, length: number): number {
@@ -105,12 +107,39 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
   },
 
   // ----- 拼接 -----
+  /**
+   * `string join(list, delimiter?)`（DMN 1.4 §10.3.4.5）。
+   *
+   * 三条口径（TCK 1140 逐条钉死）：
+   * 1. `list` 是**字符串列表**；列表里的 `null` 元素**跳过**（006），
+   *    非字符串元素（`[1,2,3]`）是类型错 → 抛（013）；
+   * 2. 单个字符串会**强转**成单元素列表（015/016：`string join("a","X")` = `"a"`），
+   *    但数字 / `null` 不行 → 抛（012/014）；
+   * 3. `delimiter` 可省（默认空串）或显式 `null`（004），给了就必须是字符串。
+   */
   'string join': (a) => {
-    const list: Value = a[0] ?? null;
-    if (list === null) return null;
-    if (!isList(list)) return toStr(list);
-    const delim = a.length > 1 ? (toStr(a[1] ?? null) ?? '') : '';
-    const parts = list.map((x) => toStr(x)).filter((x): x is string => x !== null);
-    return parts.join(delim);
+    requireArity(a, 'string join', 1, 2);
+    const raw = a[0] ?? null;
+    let items: readonly Value[];
+    if (isList(raw)) {
+      items = raw;
+    } else if (typeof raw === 'string') {
+      items = [raw];
+    } else {
+      throw argTypeError('string join', 'list', 'list of strings', feelTypeName(raw));
+    }
+    const parts: string[] = [];
+    for (const x of items) {
+      if (x === null) continue;
+      if (typeof x !== 'string') {
+        throw argTypeError('string join', 'list', 'list of strings', feelTypeName(x));
+      }
+      parts.push(x);
+    }
+    const d = a.length > 1 ? (a[1] ?? null) : null;
+    if (d !== null && typeof d !== 'string') {
+      throw argTypeError('string join', 'delimiter', 'string', feelTypeName(d));
+    }
+    return parts.join(d ?? '');
   },
 };

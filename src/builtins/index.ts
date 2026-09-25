@@ -13,6 +13,7 @@ export { STRING_BUILTINS } from './string.js';
 export { LIST_BUILTINS } from './list.js';
 export { CONTEXT_BUILTINS } from './context.js';
 export { FUNCTION_BUILTINS } from './function.js';
+export { INTERVAL_BUILTINS } from './interval.js';
 
 export {
   asList,

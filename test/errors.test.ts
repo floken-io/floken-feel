@@ -114,8 +114,8 @@ describe('floken-feel · 两条通道不许混（AGENTS.md §5.1）', () => {
     expect(err.position).toBeDefined();
   });
 
-  it('求值降级（变量/函数/类型）→ 不抛，走 warnings', () => {
-    for (const src of ['nope', 'nope(1)', '1[1]']) {
+  it('求值降级（变量/函数）→ 不抛，走 warnings', () => {
+    for (const src of ['nope', 'nope(1)']) {
       const r = evaluate(src);
       expect(r.value).toBe(null);
       expect(r.warnings.length).toBeGreaterThan(0);
@@ -124,6 +124,9 @@ describe('floken-feel · 两条通道不许混（AGENTS.md §5.1）', () => {
       expect(typeof r.warnings[0]?.start).toBe('number');
       expect(typeof r.warnings[0]?.end).toBe('number');
     }
+    // 注意：`1[1]` **不在此列** —— 非列表基底的下标按 FEEL 10.3.1.8 当单元素列表处理，
+    // `1[1]` = 1 是**正常求值**（TCK 0068，2026-09-25 修），不是降级。
+    expect(evaluate('1[1]').value).toBe(1);
     // 注意：`1 in 5` **不在此列** —— `in` 右侧的裸值是合法的 unary test（「等于」），
     // 求值结果为 false 而非降级（TCK 0072 用例，2026-09-25 修）。
     expect(evaluate('1 in 5').value).toBe(false);

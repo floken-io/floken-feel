@@ -31,10 +31,11 @@ describe('floken-feel · F1 方括号：下标 / 过滤统一', () => {
     expect(evaluate('[10, 20, 30][[1, 3]]').value).toEqual([10, 30]);
   });
 
-  it('非列表上做方括号 → null + warning', () => {
-    const r = evaluate('1[1]');
-    expect(r.value).toBe(null);
-    expect(r.warnings[0]?.code).toBe('FEEL_EVAL_TYPE_MISMATCH');
+  it('非列表基底的下标 → 按单元素列表处理（FEEL 10.3.1.8）', () => {
+    // `100[1]` = 100、`true[true]` = [true]、`true[false]` = []（TCK 0068）
+    expect(evaluate('100[1]').value).toBe(100);
+    expect(evaluate('true[true]').value).toEqual([true]);
+    expect(evaluate('true[false]').value).toEqual([]);
   });
 });
 

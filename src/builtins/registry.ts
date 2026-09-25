@@ -15,6 +15,7 @@ import { BOOLEAN_BUILTINS } from './boolean.js';
 import { CONTEXT_BUILTINS } from './context.js';
 import { CONVERSION_BUILTINS } from './conversion.js';
 import { FUNCTION_BUILTINS } from './function.js';
+import { INTERVAL_BUILTINS } from './interval.js';
 import { LIST_BUILTINS } from './list.js';
 import { NUMERIC_BUILTINS } from './numeric.js';
 import { STRING_BUILTINS } from './string.js';
@@ -33,6 +34,7 @@ const DOMAINS: Record<string, Record<string, NativeFn>> = {
   string: STRING_BUILTINS,
   list: LIST_BUILTINS,
   context: CONTEXT_BUILTINS,
+  interval: INTERVAL_BUILTINS,
   fn: FUNCTION_BUILTINS,
 };
 

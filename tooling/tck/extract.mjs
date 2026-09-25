@@ -115,17 +115,50 @@ function keyLiteral(name) {
   return /^[\p{L}_][\p{L}\p{N}_]*$/u.test(name) ? name : JSON.stringify(name);
 }
 
-/** 从 dmn 模型取 `decision name → FEEL 源码` */
+/**
+ * 从 dmn 模型取 `decision name → { source, deps }`。
+ *
+ * `deps` = 该 decision 通过 `informationRequirement/requiredDecision` 引用的**同模型其他 decision**。
+ * 例：`1146-decision014` 的表达式是 `context put(context01, "a", 2)`，而 `context01` 是本模型里
+ * 另一个 decision（内容 `{a: 1}`）—— 不递归求值它，这条断言只能拿到 `null`、并被误记成引擎失配。
+ * 这类用例此前计入 `mismatch`，实为**跑分器**的能力缺口（2026-09-25 修）。
+ */
 function collectDecisions(dmnSource) {
   const map = new Map();
   const tree = parseTree(dmnSource);
+  const byId = new Map();
+  for (const d of findAll(tree, 'decision')) {
+    if (d.attrs.id) byId.set(d.attrs.id, d);
+  }
   for (const decision of findAll(tree, 'decision')) {
     const name = decision.attrs.name ?? '';
     const exprNode = firstExpressionChild(decision);
-    const source = expressionOf(exprNode);
-    map.set(name, source);
+    const deps = [];
+    for (const ir of decision.children.filter((c) => c.local === 'informationRequirement')) {
+      for (const rd of ir.children.filter((c) => c.local === 'requiredDecision')) {
+        const href = rd.attrs.href ?? '';
+        const target = byId.get(href.startsWith('#') ? href.slice(1) : href);
+        if (target?.attrs.name) deps.push(target.attrs.name);
+      }
+    }
+    map.set(name, { source: expressionOf(exprNode), deps });
   }
   return map;
+}
+
+/** 按依赖序展开某 decision 依赖的其他 decision（去重，被依赖者在前） */
+function depChain(name, decisions, seen = new Set()) {
+  const entry = decisions.get(name);
+  if (!entry) return [];
+  const out = [];
+  for (const d of entry.deps) {
+    if (seen.has(d)) continue;
+    seen.add(d);
+    out.push(...depChain(d, decisions, seen));
+    const dep = decisions.get(d);
+    if (dep && dep.source != null) out.push({ name: d, source: dep.source });
+  }
+  return out;
 }
 
 // ---------- itemDefinition → 类型表 ----------
@@ -212,56 +245,53 @@ function scalarSource(node) {
   }
 }
 
-/** 容器（expected / inputNode）的子结构 → FEEL 源码 */
-function containerSource(node) {
+/**
+ * 「子节点」→ FEEL 源码。
+ *
+ * ★ 关键规则（**位置无关，一条管到底**）：凡是**子节点全是 `component`** 的节点，
+ * 就表示**一个 context** —— 每个 `component` 的 `name` 是键、其内容才是值。
+ * `expected` / `inputNode` / 列表的 `item` / 嵌套的 `component` 全都走这一条。
+ *
+ * ⚠️ 早期版本只在 `expected` 这一层按 context 处理、其余层直接取「第一个内层 value」，
+ * 于是 `<item><component name="a"><value>2</value></component></item>` 被读成 `2`（应为 `{a: 2}`）、
+ * `<component name="b"><component name="c">…` 被截成 `"bar"`（应为嵌套 context）。
+ * 这直接**伪造了一批 TCK 失败**（0069 的列表元素、0057/1146/1147 的嵌套 context），
+ * 2026-09-25 修复 —— 教训：**先验证度量工具，再改被测代码**。
+ */
+function srcOfChildren(node) {
   const kids = node.children.filter((c) => c.local !== 'description');
-  const components = kids.filter((c) => c.local === 'component');
-  if (components.length && components.length === kids.length) {
-    const parts = components.map((c) => {
-      const inner = firstValueChild(c);
-      return `${keyLiteral(c.attrs.name ?? '')}: ${valueSource(inner)}`;
-    });
-    return `{${parts.join(', ')}}`;
-  }
-  if (kids.length === 1) return valueSource(kids[0]);
   if (!kids.length) return 'null';
+  const comps = kids.filter((c) => c.local === 'component');
+  if (comps.length === kids.length) {
+    return `{${comps.map((c) => `${keyLiteral(c.attrs.name ?? '')}: ${srcOfChildren(c)}`).join(', ')}}`;
+  }
+  if (kids.length === 1) return srcOf(kids[0]);
   // 少见形态：多个裸 value → 视为列表
-  return `[${kids.map(valueSource).join(', ')}]`;
+  return `[${kids.map(srcOf).join(', ')}]`;
 }
 
-function firstValueChild(node) {
-  return node.children.find((c) => ['value', 'list', 'component', 'item'].includes(c.local)) ?? null;
-}
-
-/** `value | list | item | component` → FEEL 源码 */
-function valueSource(node) {
-  if (!node) return 'null';
+/** `value | list | item | component | expected | inputNode` → FEEL 源码 */
+function srcOf(node) {
   switch (node.local) {
     case 'value':
       return scalarSource(node);
-    case 'list': {
-      const items = node.children.filter((c) => c.local === 'item');
-      return `[${items.map(valueSource).join(', ')}]`;
-    }
+    case 'list':
+      return `[${node.children
+        .filter((c) => c.local === 'item')
+        .map(srcOf)
+        .join(', ')}]`;
     case 'item':
-      return valueSource(firstValueChild(node));
-    case 'component': {
-      const inner = firstValueChild(node);
-      if (!inner) return 'null';
-      // 列表里的 component（如 `[{a: 1}, {a: 2}]`）是 context 元素
-      if (inner.local === 'component') {
-        const parts = [node, ...node.children.filter((c) => c.local === 'component')];
-        return `{${parts.map((c) => `${keyLiteral(c.attrs.name ?? '')}: ${valueSource(firstValueChild(c))}`).join(', ')}}`;
-      }
-      return valueSource(inner);
-    }
+    case 'component':
     case 'expected':
     case 'inputNode':
-      return containerSource(node);
+      return srcOfChildren(node);
     default:
       return 'null';
   }
 }
+
+const containerSource = srcOfChildren;
+const valueSource = srcOf;
 
 // ---------- testCase → 断言 ----------
 
@@ -282,7 +312,8 @@ function collectCases(testSource, decisions, label) {
 
     for (const resultNode of testCase.children.filter((c) => c.local === 'resultNode')) {
       const decision = resultNode.attrs.name ?? '';
-      const expression = decisions.get(decision);
+      const entry = decisions.get(decision);
+      const expression = entry ? entry.source : null;
       const expected = containerSource(findOne([resultNode], 'expected'));
 
       const base = {
@@ -291,6 +322,7 @@ function collectCases(testSource, decisions, label) {
         id,
         decision,
         context,
+        deps: depChain(decision, decisions),
         expected,
         errorResult: resultNode.attrs.errorResult === 'true',
       };

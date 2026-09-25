@@ -3,7 +3,7 @@
   "source": "DMN TCK — github.com/dmn-tck/tck（CC BY-SA，语料不随包分发）",
   "clock": "2026-05-12T00:00:00.000Z",
   "assertions": 2053,
-  "pass": 1783,
+  "pass": 1873,
   "labels": {
     "0050-feel-abs-function": {
       "pass": 17,
@@ -34,7 +34,7 @@
       "total": 28
     },
     "0057-feel-context": {
-      "pass": 7,
+      "pass": 11,
       "total": 11
     },
     "0058-feel-number-function": {
@@ -78,11 +78,11 @@
       "total": 9
     },
     "0068-feel-equality": {
-      "pass": 91,
+      "pass": 114,
       "total": 114
     },
     "0069-feel-list": {
-      "pass": 20,
+      "pass": 35,
       "total": 35
     },
     "0070-feel-instance-of": {
@@ -94,7 +94,7 @@
       "total": 38
     },
     "0072-feel-in": {
-      "pass": 319,
+      "pass": 322,
       "total": 327
     },
     "0073-feel-comments": {
@@ -126,11 +126,11 @@
       "total": 37
     },
     "0080-feel-getvalue-function": {
-      "pass": 13,
+      "pass": 14,
       "total": 14
     },
     "0081-feel-getentries-function": {
-      "pass": 6,
+      "pass": 9,
       "total": 9
     },
     "0082-feel-coercion": {
@@ -150,7 +150,7 @@
       "total": 4
     },
     "0092-feel-lambda": {
-      "pass": 2,
+      "pass": 3,
       "total": 18
     },
     "0093-feel-at-literals": {
@@ -274,7 +274,7 @@
       "total": 36
     },
     "1130-feel-interval": {
-      "pass": 0,
+      "pass": 14,
       "total": 14
     },
     "1131-feel-function-invocation": {
@@ -282,7 +282,7 @@
       "total": 8
     },
     "1140-feel-string-join-function": {
-      "pass": 19,
+      "pass": 22,
       "total": 22
     },
     "1141-feel-round-up-function": {
@@ -302,15 +302,15 @@
       "total": 16
     },
     "1145-feel-context-function": {
-      "pass": 13,
+      "pass": 18,
       "total": 18
     },
     "1146-feel-context-put-function": {
-      "pass": 16,
+      "pass": 30,
       "total": 30
     },
     "1147-feel-context-merge-function": {
-      "pass": 10,
+      "pass": 14,
       "total": 14
     },
     "1148-feel-now-function": {

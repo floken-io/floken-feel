@@ -39,13 +39,21 @@ function sleep(ms) {
   }
 }
 
-/** 通过 node 直接执行脚本（不经 cmd.exe）；EBUSY/EAGAIN 属 Windows 偶发，带退避重试 */
+/**
+ * 通过 node 直接执行脚本（不经 cmd.exe）；EBUSY/EAGAIN 属 Windows 偶发，带退避重试。
+ *
+ * ⚠️ stdio **显式 `ignore` 掉 stdin**：默认 `'pipe'` 会给 stdin 也接一根管道，
+ * 受限沙箱 / 部分 Windows 环境下会在这根管道上直接 `EBUSY`。被测命令都不读 stdin。
+ */
 function run(script, args, attempts = 5) {
   const delays = [0, 500, 1500, 3000, 6000];
   let lastErr;
   for (let i = 0; i < attempts; i += 1) {
     try {
-      return execFileSync(NODE, [script, ...args], { stdio: 'pipe', cwd: root });
+      return execFileSync(NODE, [script, ...args], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        cwd: root,
+      });
     } catch (e) {
       lastErr = e;
       const msg = String(e && e.message ? e.message : e);

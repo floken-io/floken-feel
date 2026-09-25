@@ -60,11 +60,18 @@ describe('floken-feel · TCK 修复回归 · 区间（Range 一等公民）', ()
     expect(evaluate('5 in [10..null)').value).toBe(false);
   });
 
-  it('比较符写法与区间写法等价（FEEL 10.3.2.5）', () => {
-    expect(evaluate('(<= 10) = (null..10]').value).toBe(true);
-    expect(evaluate('(< 10) = (null..10)').value).toBe(true);
-    expect(evaluate('(>= 10) = [10..null)').value).toBe(true);
-    expect(evaluate('(=10) = [10..10]').value).toBe(true);
+  it('一元测试写法 ≠ 同端点的显式区间（TCK 0068 用同一对端点钉死）', () => {
+    // 端点完全相同，但「写法」不同 → 不相等；同写法才相等。
+    expect(evaluate('(< 10) = (null..10)').value).toBe(false);
+    expect(evaluate('(<= 10) = (null..10]').value).toBe(false);
+    expect(evaluate('(> 10) = (10..null)').value).toBe(false);
+    expect(evaluate('(>= 10) = [10..null)').value).toBe(false);
+    expect(evaluate('(< 10) = (< 10)').value).toBe(true);
+    // 判别位不影响属性（TCK 0074）：端点为 null、开闭符号照常读出
+    expect(evaluate('(< 10).start').value).toBe(null);
+    expect(evaluate('(< 10).end').value).toBe(10);
+    expect(evaluate('(< 10).end included').value).toBe(false);
+    expect(evaluate('(<= 10).end included').value).toBe(true);
   });
 
   it('`in` 右侧裸值按相等判定；列表元素是区间按包含（TCK 0072）', () => {
@@ -316,5 +323,159 @@ describe('floken-feel · TCK 修复回归 · string() 规范文本（0079）', (
     expect(catchErr('string()')?.code).toBe('FEEL_EVAL_ARG_COUNT');
     expect(catchErr('string("foo", "bar")')?.code).toBe('FEEL_EVAL_ARG_COUNT');
     expect(s('string(from:"foo")')).toBe('foo');
+  });
+});
+
+describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145/1146/1147）', () => {
+  const err = (src: string) => {
+    try {
+      evaluate(src);
+      return null;
+    } catch (e) {
+      return e as { code: string; details?: Record<string, unknown> };
+    }
+  };
+  const v = (src: string) => evaluate(src).value;
+  /** 把 FeelContext 递归摊成普通对象，便于直接跟期望的对象字面量比 */
+  const obj = (src: string): unknown => {
+    const deep = (x: unknown): unknown => {
+      if (x && typeof x === 'object' && '__feelContext' in x) {
+        const out: Record<string, unknown> = {};
+        for (const [k, val] of (x as { entries: Map<string, unknown> }).entries) out[k] = deep(val);
+        return out;
+      }
+      if (Array.isArray(x)) return x.map(deep);
+      return x;
+    };
+    return deep(v(src));
+  };
+
+  it('语境键支持空格与额外字符（用源码切片，TCK 0057 004/005/006/007）', () => {
+    expect(obj('{foo bar: "foo"}')).toEqual({ 'foo bar': 'foo' });
+    expect(obj('{foo+bar: "foo"}')).toEqual({ 'foo+bar': 'foo' });
+    expect(obj('{"foo+bar((!!],foo": "foo"}')).toEqual({ 'foo+bar((!!],foo': 'foo' });
+    expect(obj('{"": "foo"}')).toEqual({ '': 'foo' });
+  });
+
+  it('上下文里重复键无定义 → 抛（TCK 0057 008，DMN14-178）', () => {
+    expect(err('{foo: "bar", foo: "baz"}')?.code).toBe('FEEL_EVAL_UNDEFINED');
+    expect(err('context([{key:"a", value:1},{key:"a", value:2}])')?.code).toBe('FEEL_EVAL_UNDEFINED');
+  });
+
+  it('`context(entries)`：收列表也收单个条目，键/值缺一不可（TCK 1145）', () => {
+    expect(obj('context([{key:"a", value:1}, {key:"b", value:2}])')).toEqual({ a: 1, b: 2 });
+    expect(obj('context({key:"a", value:1})')).toEqual({ a: 1 });
+    expect(obj('context(entries: {key:"a", value:1})')).toEqual({ a: 1 });
+    expect(obj('context({key: "a", value: null})')).toEqual({ a: null });
+    expect(obj('context({key: "", value: 1})')).toEqual({ '': 1 });
+    expect(obj('context([{key:"a", value:1, ignored:"foo"}])')).toEqual({ a: 1 });
+    // 缺 key / 缺 value / 类型不对 / 个数不对 → 全部抛
+    for (const src of [
+      'context({value:1})',
+      'context({key: "a"})',
+      'context({key: null, value:1})',
+      'context("foo")',
+      'context(null)',
+      'context()',
+      'context([], "foo")',
+    ]) {
+      expect(err(src), src).not.toBeNull();
+    }
+  });
+
+  it('`context put`：位置调用两种键形态都收（TCK 1146）', () => {
+    expect(obj('context put({}, "a", 1)')).toEqual({ a: 1 });
+    expect(obj('context put({"a": 1}, "a", 2)')).toEqual({ a: 2 });
+    expect(obj('context put({}, "a", null)')).toEqual({ a: null });
+    expect(obj('context put({}, "", 1)')).toEqual({ '': 1 });
+    // 覆盖已有键时**保持原插入顺序**
+    expect(Object.keys(obj('context put({a:1, b:2, c:3}, "b", 3)') as object)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('`context put`：字符串列表即**路径**，逐层重建新副本（TCK 1146 nested*）', () => {
+    expect(obj('context put({x:1, y: {a: 0} }, ["y", "a"], 2)')).toEqual({ x: 1, y: { a: 2 } });
+    expect(obj('context put({x:1, y: {a: 0} }, ["y", "b"], 2)')).toEqual({ x: 1, y: { a: 0, b: 2 } });
+    expect(obj('context put({x:1, y: {a: {b: {c: 1}} }}, ["y","a","b","c"], 2)')).toEqual({
+      x: 1,
+      y: { a: { b: { c: 2 } } },
+    });
+    // 不改原值：同一表达式里原件与副本各留一份
+    expect(obj('{original: {a: {b: 1}}, copied: context put(original, ["a","b"], 2)}')).toEqual({
+      original: { a: { b: 1 } },
+      copied: { a: { b: 2 } },
+    });
+    // 中间层不是上下文（`a` 是数字）/ 空路径 / 路径里有 null → 抛
+    for (const src of [
+      'context put({x:1, y:{a:0}}, ["y","a","b","c"], 2)',
+      'context put({x:1, y:{a:0}}, [], 2)',
+      'context put({x:1, y:{a:0}}, ["y", null], 2)',
+      'context put({x:1, y:{a:0}}, [null, "a"], 2)',
+      'context put({}, null, 1)',
+      'context put({}, 1, 1)',
+      'context put([], "a", 1)',
+      'context put({}, "a")',
+      'context put({}, "a", 1, 1)',
+    ]) {
+      expect(err(src), src).not.toBeNull();
+    }
+  });
+
+  it('`context put` 同名重载：`keys:` 收列表、`key:` 只收字符串（TCK 1146 nested007/008）', () => {
+    expect(obj('context put(context: {x:1, y:{a:0}}, keys: ["y","a"], value: 2)')).toEqual({
+      x: 1,
+      y: { a: 2 },
+    });
+    expect(obj('context put(context: {}, key: "a", value: 1)')).toEqual({ a: 1 });
+    // 列表落在 `key:` 上是签名错（`key` 是 string，不是 list）
+    expect(err('context put(context: {x:1, y:{a:0}}, key: ["y","a"], value: 2)')?.code).toBe(
+      'FEEL_EVAL_ARG_TYPE',
+    );
+    expect(err('context put(context: {}, ky: "a", value: 1)')?.code).toBe('FEEL_EVAL_NAMED_ARG');
+  });
+
+  it('`context merge`：收列表也收单个上下文，非上下文元素 → 抛（TCK 1147）', () => {
+    expect(obj('context merge([{"a": 1}])')).toEqual({ a: 1 });
+    expect(obj('context merge([{"a": 1}, {"b": 2}])')).toEqual({ a: 1, b: 2 });
+    expect(obj('context merge([{"a": 1}, {"a": 2}])')).toEqual({ a: 2 });
+    // 不做深合并：整个 `a` 被后者替换
+    expect(obj('context merge([{"a": {"aa": 1}}, {"a": {"bb": 2}}])')).toEqual({ a: { bb: 2 } });
+    expect(obj('context merge({"a": 1})')).toEqual({ a: 1 });
+    expect(obj('context merge(contexts: {"a": 1})')).toEqual({ a: 1 });
+    for (const src of [
+      'context merge(null)',
+      'context merge()',
+      'context merge([],"foo")',
+      'context merge([1,2,3])',
+      'context merge([{"a": 1},2,{"b": 2}])',
+      'context merge(context: [{"a": 1}])',
+    ]) {
+      expect(err(src), src).not.toBeNull();
+    }
+  });
+
+  it('`get entries` 个数必须为 1、`m` 必须是上下文（TCK 0081）', () => {
+    expect(v('count(get entries({a: "foo", b: "bar"}))')).toBe(2);
+    expect(obj('get entries({})')).toEqual([]);
+    for (const src of ['get entries()', 'get entries({a:"foo"}, {b:"bar"})', 'get entries(null)', 'get entries(123)', 'get entries([1,2,3])']) {
+      expect(err(src), src).not.toBeNull();
+    }
+  });
+
+  it('`string join`：只收字符串列表、单个字符串强转、个数 1~2（TCK 1140）', () => {
+    expect(v('string join(["a","b","c"])')).toBe('abc');
+    expect(v('string join(["a","b","c"], " and ")')).toBe('a and b and c');
+    expect(v('string join(["a","b","c"], null)')).toBe('abc');
+    expect(v('string join(["a",null,"c"], "X")')).toBe('aXc');
+    expect(v('string join([])')).toBe('');
+    expect(v('string join("a", "X")')).toBe('a');
+    for (const src of [
+      'string join()',
+      'string join(["a","c"], "X", "foo")',
+      'string join([1,2,3], "X")',
+      'string join(123, "X")',
+      'string join(null)',
+    ]) {
+      expect(err(src), src).not.toBeNull();
+    }
   });
 });

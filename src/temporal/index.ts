@@ -244,6 +244,7 @@ function wrap(
     iso,
     raw: obj,
     eqKey: eqKeyOf(kind, obj, z, iso),
+    identity: identityOf(kind, obj, z, iso),
     category: categoryOf(kind, iso),
   };
   // 可选字段按需挂（`exactOptionalPropertyTypes` 下不能显式写 undefined）
@@ -260,14 +261,56 @@ function zoneToken(z: ZoneInfo): string {
 }
 
 /**
- * 相等判定键（`FeelTemporal.eqKey`，供 `is()` 用 —— TCK 0103）。
- *
- * - **时间**：`kind|本地字段|偏移或时区`。于是 `23:00:50Z` ≡ `23:00:50+00:00`，
- *   而 `23:00:50` ≠ `23:00:50Z`（无偏移 vs 零偏移），时区名也 ≠ 同值偏移。
- * - **时长**：只比**总量**，但两类互不相等 —— `P1D` ≡ `PT24H`（同属 days-and-time），
- *   而 `P0Y` ≠ `P0D`（years-and-months vs days-and-time）。
+ * 抹掉秒以下的小数。**FEEL 的相等判定分辨率是秒**：
+ * TCK 0068 `time_005` 要求 `time("10:30:00.0001") = time("10:30:00.0002")` 为 **true**，
+ * 而同组的 `time_002_b` 要求 `10:30:01 ≠ 10:30:00` —— 故精度就停在秒。
+ * （`iso` 本身仍保留小数，`string()` 必须照原样输出。）
  */
-function eqKeyOf(
+function toSecond(text: string): string {
+  return text.replace(/(\d{2}:\d{2}:\d{2})\.\d+/, '$1');
+}
+
+/**
+ * 该日期时间值对应的**瞬时**（秒）；无绝对位置（既无偏移也无时区）→ `null`。
+ *
+ * 有绝对位置才能跨写法相等：TCK 0068 要求
+ * `…+02:00` ≡ `…@Europe/Paris`（datetime_008）、`+00:00` ≡ `@Etc/UTC`（009）、
+ * `@Australia/Melbourne` ≡ `@Australia/Sydney`（008_b）、
+ * `-01:00` 与 `+04:00` 同刻（012/013）—— 全是**按瞬时**判。
+ * 纯本地时间（`2018-12-08T00:00:00`）没有绝对位置，故退回按本地字段比。
+ */
+function instantSecondsOf(obj: unknown, zone: ZoneInfo, iso: string): number | null {
+  const raw = obj as { epochNanoseconds?: bigint } | null;
+  // 带时区名 → 底层是 ZonedDateTime，直接有瞬时
+  if (raw && typeof raw.epochNanoseconds === 'bigint') {
+    return Number(raw.epochNanoseconds / 1000000000n);
+  }
+  if (!zone.offset) return null;
+  const T = getTemporal();
+  if (!T) return null;
+  const suffixLen = zoneSuffix(zone).length;
+  const local = toSecond(iso.slice(0, iso.length - suffixLen));
+  try {
+    return Number(T.Instant.from(`${local}${zone.offset}`).epochNanoseconds / 1000000000n);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * **写法同一键**（`FeelTemporal.identity`，供 `is()` 用 —— TCK 0103）。
+ *
+ * 与 `eqKey` 的区别是本包最反直觉的一处，但 TCK 用**同一对值**把我们钉死了：
+ * `@"2002-04-02T12:00:00-01:00"` 与 `@"2002-04-02T17:00:00+04:00"` 是**同一瞬时**，
+ * 于是 0068 `datetime_012` 要求 `=` 为 **true**，而 0103 `datetime_004` 要求 `is` 为 **false**。
+ * 结论：`=` 按瞬时，`is()` 按**写法**（本地字段 + 偏移/时区都得一致）。
+ *
+ * - 时间 / 日期时间：`kind|本地字段|偏移或时区`。零偏移的两种写法（`Z` 与 `+00:00`）归一
+ *   （0103 `time_004`）；但 `无偏移` ≠ `零偏移`（`time_005`），`@Zone` ≠ 同值偏移（`time_006`）。
+ * - 时长：只比**总量** —— `P1D` ≡ `PT24H`（0103 `dt_duration_002`）、`P1Y` ≡ `P12M`（`ym_duration_002`），
+ *   而两类互不相等（`P0Y` ≠ `P0D`，`zero_duration_001`）。
+ */
+function identityOf(
   kind: FeelTemporal['kind'],
   obj: unknown,
   zone: ZoneInfo,
@@ -290,6 +333,30 @@ function eqKeyOf(
     return `duration-ym|${(raw?.years ?? 0) * 12 + (raw?.months ?? 0)}mo`;
   }
   return `${kind}|${base}|${zoneToken(zone)}`;
+}
+
+/**
+ * 相等判定键（`FeelTemporal.eqKey`，供 `=` 用 —— TCK 0068）。
+ *
+ * - **时间**：`kind|本地字段|偏移或时区`，**只到秒**。`23:00:50Z` ≡ `23:00:50+00:00`，
+ *   而 `23:00:50` ≠ `23:00:50Z`（无偏移 vs 零偏移），时区名也 ≠ 同值偏移。
+ *   `time("10:30:00.0001") = time("10:30:00.0002")` 为 true（`time_005`）—— 相等只到秒。
+ * - **日期时间**：有偏移/时区 → 比**瞬时**；无 → 比本地字段（同样只到秒）。
+ *   两种口径**不可混**：一个本地时间没有绝对位置，不会等于任何瞬时写法。
+ * - **时长**：同 `identityOf`（只比总量、两类互不相等）。
+ */
+function eqKeyOf(
+  kind: FeelTemporal['kind'],
+  obj: unknown,
+  zone: ZoneInfo,
+  base: string,
+): string {
+  if (kind === 'dateTime') {
+    const epoch = instantSecondsOf(obj, zone, base);
+    return epoch === null ? `dateTime-local|${toSecond(base)}` : `dateTime-instant|${epoch}`;
+  }
+  if (kind === 'duration') return identityOf(kind, obj, zone, base);
+  return `${kind}|${toSecond(base)}|${zoneToken(zone)}`;
 }
 
 function temporalArg(v: Value): any | null {

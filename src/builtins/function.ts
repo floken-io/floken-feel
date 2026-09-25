@@ -10,11 +10,10 @@ import {
   isList,
   isRange,
   isTemporal,
-  type FeelTemporal,
   type NativeFn,
   type Value,
 } from '../core/types.js';
-import { deepEquals } from '../core/values.js';
+import { literalEquals } from '../core/values.js';
 import { argCountError } from '../core/errors.js';
 
 /** 两个值是否属于**同一个运行时类型档**（时间值还要 kind 相同） */
@@ -27,23 +26,19 @@ function sameTypeFamily(a: Value, b: Value): boolean {
   return typeof a === typeof b;
 }
 
-/** 时间值按 `eqKey` 比较（见 `FeelTemporal.eqKey`）；两侧都缺则退回 `iso` */
-function temporalEquals(a: FeelTemporal, b: FeelTemporal): boolean {
-  return a.eqKey !== undefined && b.eqKey !== undefined ? a.eqKey === b.eqKey : a.iso === b.iso;
-}
-
 /**
  * `is(value1, value2)`：值**与类型**都相等（DMN 1.4 §10.3.4.6）。
  *
- * 与 `=` 的差别主要落在时间上：`is(@"23:00:50Z", @"23:00:50+00:00")` 为真
- * （同一零偏移的两种写法），而 `is(@"23:00:50", @"23:00:50Z")` 为假（一个没有偏移）。
- * 这些口径由 `../temporal` 写进 `eqKey`，核心只做键比较。
+ * ⚠️ 与 `=` 的差别在时间值上，是本包最容易写错的一处：`=` 比**瞬时**、`is()` 比**写法**。
+ * TCK 用同一对值把两条口径分别钉死 ——
+ * `@"2002-04-02T12:00:00-01:00"` 与 `@"2002-04-02T17:00:00+04:00"`：
+ * `=` 为 true（0068 `datetime_012`），`is` 为 false（0103 `datetime_004`）。
+ * 故此处走 `literalEquals`（时间值读 `FeelTemporal.identity`），**不能用 `deepEquals`**。
  */
 function isStrictEqual(a: Value, b: Value): boolean {
   if (a === null || b === null) return false;
   if (!sameTypeFamily(a, b)) return false;
-  if (isTemporal(a) && isTemporal(b)) return temporalEquals(a, b);
-  return deepEquals(a, b);
+  return literalEquals(a, b);
 }
 
 export const FUNCTION_BUILTINS: Record<string, NativeFn> = {

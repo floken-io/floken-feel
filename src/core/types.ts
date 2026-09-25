@@ -27,6 +27,18 @@ export interface FeelRange {
   readonly to: Value;
   readonly fromInclusive: boolean;
   readonly toInclusive: boolean;
+  /**
+   * **前缀写法判别位**（可选）：`(< 10)` / `(<= 10)` / `(> 10)` / `(>= 10)` / `(=10)` / `(!=10)`
+   * 记下当时的运算符；显式区间写法（`(null..10)`、`[10..10]`）留空。
+   *
+   * 为什么需要它：这两种写法**端点完全相同**，但 DMN TCK 0068 明确要求它们**不相等** ——
+   * `(< 10) = (null..10)` → `false`，而 `(< 10) = (< 10)` → `true`。
+   * 同时 0074 又要求 `(<10).start` = `null`、`(<10).end` = `10`、
+   * `(=10).start included` = `true` —— 即**属性层面二者一致**。
+   * 故保留同一表示、只加一个判别位：属性与 `in` 判定照旧，`=` 时要求判别位也相同。
+   * `!=` 是补集、无区间等价端点，仅借用本字段承载写法（`in` 时按"不等"判，见 `rangeTestMatches`）。
+   */
+  readonly test?: string;
 }
 
 /**
@@ -57,15 +69,25 @@ export interface FeelTemporal {
    */
   readonly src?: string;
   /**
-   * **相等判定键**（可选，由 `./temporal` 档生成）。
+   * **相等判定键**（可选，由 `./temporal` 档生成）—— 口径是 `=`（TCK 0068）。
    *
-   * 为什么不直接比较 `iso`：DMN 的 `is()` 对时间有更细的口径（TCK 0103）——
-   * `23:00:50Z` 与 `23:00:50+00:00` 相等（同一零偏移的两种写法），
-   * 但 `23:00:50` 与 `23:00:50Z` **不等**（一个无偏移）；`P1D` 与 `PT24H` 相等……
+   * 为什么不直接比较 `iso`：FEEL 的 `=` 对时间有两处更细的口径 ——
+   * ① 只到**秒**：`time("10:30:00.0001") = time("10:30:00.0002")` 为 true；
+   * ② 日期时间带偏移/时区时按**瞬时**比：`…+02:00` ≡ `…@Europe/Paris`（10 月）、
+   *    `@Australia/Melbourne` ≡ `@Australia/Sydney`（同一偏移）。
    * 这些都无法用"可直接排序的 `iso`"表达，故另开一键。
    * 两侧都有 `eqKey` 时以它为准，否则退回 `kind + iso`。
    */
   readonly eqKey?: string;
+  /**
+   * **写法同一键**（可选，由 `./temporal` 档生成）—— 口径是 `is()`（TCK 0103）。
+   *
+   * 与 `eqKey` 的差别是本包最反直觉的一处，TCK 用**同一对值**钉死：
+   * `@"2002-04-02T12:00:00-01:00"` 与 `@"2002-04-02T17:00:00+04:00"` 是同一瞬时 →
+   * `=` 为 **true**（0068 datetime_012）而 `is` 为 **false**（0103 datetime_004）。
+   * 即 `=` 比"时刻"，`is()` 比"写法"（本地字段 + 偏移/时区都得一致，零偏移的 `Z`/`+00:00` 归一）。
+   */
+  readonly identity?: string;
   /**
    * **FEEL 类型名**（可选，由 `./temporal` 档生成），比 `kind` 更细。
    *
@@ -136,8 +158,22 @@ export interface EvalRuntime {
   clock?: () => Date;
 }
 
-/** 内置函数实现签名。第三参为可选运行时，保持既有实现可只写 `(args, ctx)`。 */
-export type NativeFn = (args: Value[], ctx: FeelContext, runtime?: EvalRuntime) => Value;
+/**
+ * 内置函数实现签名。
+ *
+ * - 第三参为可选运行时，保持既有实现可只写 `(args, ctx)`。
+ * - 第四参 `argNames`：**命名参数调用**时逐位给出实参来自哪个形参名（位置调用 → `undefined`）。
+ *   只有"同名重载"才需要它 —— 目前唯一用户是 `context put`：规范给了两套签名
+ *   `context put(context, key, value)`（`key` 是字符串）与
+ *   `context put(context, keys, value)`（`keys` 是字符串列表），
+ *   对位后两者形状一模一样，只有靠形参名才分得清（TCK 1146 nested007/nested008）。
+ */
+export type NativeFn = (
+  args: Value[],
+  ctx: FeelContext,
+  runtime?: EvalRuntime,
+  argNames?: readonly (string | null)[],
+) => Value;
 
 // ---------- 类型守卫 ----------
 
@@ -181,8 +217,10 @@ export function makeRange(
   to: Value,
   fromInclusive: boolean,
   toInclusive: boolean,
+  test?: string,
 ): FeelRange {
-  return { __feelRange: true, from, to, fromInclusive, toInclusive };
+  const base: FeelRange = { __feelRange: true, from, to, fromInclusive, toInclusive };
+  return test === undefined ? base : { ...base, test };
 }
 
 /** 判定是否为「标量」（可直接参与数值/字符串运算） */
@@ -262,6 +300,8 @@ export type Node =
       to: Node;
       fromInclusive: boolean;
       toInclusive: boolean;
+      /** 前缀写法（`(< 10)` 等）时的运算符；显式区间写法缺省。见 `FeelRange.test` */
+      test?: string;
       start: number;
       end: number;
     }

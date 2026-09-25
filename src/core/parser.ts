@@ -297,43 +297,73 @@ class Parser {
     return { args, argNames };
   }
 
+  /**
+   * 上下文条目的**键**（FEEL 1.4 §10.3.1.2 只写了 `name | string literal`）。
+   *
+   * 但 TCK 0057 把"名字"放得比规范宽（`004` 的 `foo bar`、`005` 的 `foo+bar`），
+   * 因此这里对非字符串字面量取「**冒号之前的原始源码**」再去掉首尾空白，
+   * 而不是拼 token 值 —— 后者会把 `foo+bar` 的空白处理搞错。
+   * 字符串字面量仍按字面量取值（`006` 的 `"foo+bar((!!],foo"` 就是靠这条过关）。
+   *
+   * 重复键的判定不在这里：`{a:1, a:2}` 语法上成立、语义上无定义，
+   * 按"语法归语法、语义归语义"放到求值期（`evaluator.ts` 的 `context` 分支）。
+   */
+  private parseContextKey(): string {
+    const t = this.cur();
+    if (t.type === 'str') {
+      this.advance();
+      return t.value;
+    }
+    if (t.type !== 'name' && t.type !== 'kw') this.expectName(); // 抛带 position 的错
+    const from = t.start;
+    while (!this.at('colon')) {
+      if (this.at('eof') || this.at('rbrace') || this.at('comma')) this.unexpected();
+      this.advance();
+    }
+    return this.src.slice(from, this.cur().start).trim();
+  }
+
   private parsePrimary(): Node {
     const t = this.cur();
 
-    // `<= 10` / `< 10` / `> 10` / `>= 10` / `= 10`：**unary test 的区间等价**
-    // （FEEL 10.3.2.5：`< a` ≡ `(null..a)`、`>= a` ≡ `[a..null)`、`= a` ≡ `[a..a]`）
-    // 这样 `1 in <= 10` 与 `(<= 10) = (null..10]` 两种写法都能直接求值。
-    // ⚠️ `!= a` 是补集、无单一区间等价形式，故不在此列（由 unary test 通路处理）。
-    if (
-      t.type === 'op' &&
-      (t.value === '<' || t.value === '<=' || t.value === '>' || t.value === '>=' || t.value === '=')
-    ) {
+    /*
+     * `<= 10` / `< 10` / `> 10` / `>= 10` / `= 10` / `!=10`：**前缀一元测试写法**。
+     *
+     * 端点按 FEEL 10.3.2.5 的等价关系定（`< a` ≡ `(null..a)`、`>= a` ≡ `[a..null)`、`= a` ≡ `[a..a]`），
+     * 这样 `1 in <= 10` 与 `(<10).start` / `(<10).end`（TCK 0074）都能直接求值；
+     * 另记 `test` 判别位，好让 `=` 区分「前缀写法」与「端点相同的显式区间」
+     * —— TCK 0068 要求 `(< 10) = (null..10)` 为 **false**、`(< 10) = (< 10)` 为 **true**。
+     * `!=` 是补集、无区间等价端点，只借 `test` 承载写法（`in` 时按"不等"判）。
+     */
+    if (t.type === 'op' && CMP_OPS.has(t.value)) {
       this.advance();
+      const op = t.value;
       const rhs = this.parseAdditive();
       const nullLit: Node = { type: 'lit', value: null, start: t.start, end: t.start };
-      const inclusive = t.value.endsWith('='); // `<=` `>=` `=` → true；`<` `>` → false
+      const inclusive = op.endsWith('='); // `<=` `>=` `=` `!=` → true；`<` `>` → false
       const start = t.start;
       const end = rhs.end;
-      // 端点开闭必须与**显式区间写法**逐位一致，否则 `(<= 10) = (null..10]` 判不出真：
-      // `<= a` ≡ `(null..a]`（下界开、无下界故无意义）、`>= a` ≡ `[a..null)`、`= a` ≡ `[a..a]`。
-      if (t.value === '=') {
+      // `= a` / `!= a`：端点都是 `a`，区别只在 `test`（`!=` 的"补集"语义由 `rangeTestMatches` 兜）
+      if (op === '=' || op === '!=') {
         return {
           type: 'range',
           from: rhs,
           to: rhs,
           fromInclusive: true,
           toInclusive: true,
+          test: op,
           start,
           end,
         };
       }
-      const isLower = t.value === '>' || t.value === '>=';
+      const isLower = op === '>' || op === '>=';
       return {
         type: 'range',
         from: isLower ? rhs : nullLit,
         to: isLower ? nullLit : rhs,
         fromInclusive: isLower ? inclusive : false,
         toInclusive: isLower ? false : inclusive,
+        test: op,
         start,
         end,
       };
@@ -482,19 +512,13 @@ class Parser {
       return { type: 'list', items, start: open.start, end: close.end };
     }
 
-    // 上下文 { a: 1, "b c": 2, Mike's age: 3 }
+    // 上下文 { a: 1, "b c": 2, Mike's age: 3, foo+bar: 4 }
     if (t.type === 'lbrace') {
       this.advance();
       const entries: { key: string; value: Node }[] = [];
       if (!this.at('rbrace')) {
         do {
-          const keyTok = this.cur();
-          if (keyTok.type === 'str' || keyTok.type === 'name') {
-            this.advance();
-          } else {
-            this.expectName();
-          }
-          const key = keyTok.value;
+          const key = this.parseContextKey();
           this.expect('colon');
           const value = this.parseExpression();
           entries.push({ key, value });

@@ -45,7 +45,39 @@ type FeelRangeLike = {
   to: Value;
   fromInclusive: boolean;
   toInclusive: boolean;
+  test?: string;
 };
+
+/**
+ * **前缀一元测试写法**（`(< 5)` / `(<= 5)` / `(> 5)` / `(>= 5)` / `(=5)` / `(!=5)`）的成员判定。
+ *
+ * 为什么不复用 `rangeContains`：`!=` 是补集、没有区间等价端点（`5 in (!=5)` 为 false
+ * 而 `rangeContains` 对空区间无解），且 `= 5` 与 `[5..5]` 在 TCK 里是**不同写法**。
+ * 端点仍按 FEEL 10.3.2.5 的等价关系由解析器填好（`(<10)` → `(null..10)`），
+ * 故除 `=` / `!=` 外都能直接用端点比较，三值逻辑同 `rangeContains`。
+ */
+export function rangeTestMatches(range: FeelRangeLike, value: Value): Value {
+  const op = range.test;
+  if (op === undefined) return rangeContains(range, value);
+
+  if (op === '=') return sameTestValue(value, range.from);
+  if (op === '!=') {
+    const eq = sameTestValue(value, range.from);
+    return eq === null ? null : !eq;
+  }
+  // `<` `<=` `>` `>=`：端点已按等价关系填在 from / to 上，直接交给 rangeContains
+  return rangeContains(range, value);
+}
+
+/**
+ * 一元测试里的「等于」：跨类型 → `null`（未知），与 `=` 的类型前沿一致。
+ * `5 in (=5)` → true、`"a" in (=5)` → null（不可比，既不真也不假）。
+ */
+function sameTestValue(a: Value, b: Value): Value {
+  if (a === null || b === null) return a === b;
+  if (!sameTypeFamily(a, b)) return null;
+  return deepEquals(a, b);
+}
 
 /**
  * FEEL 类型名是否同类（`=` 的类型前沿，见 `sameTypeFamily`）。
@@ -76,15 +108,31 @@ export function sameTypeFamily(a: Value, b: Value): boolean {
 }
 
 /**
- * 时间值的相等键。优先用 `./temporal` 档给的 `eqKey`（它对时区/偏移/时长有更细口径），
- * 没有则退回 `kind|iso`。
+ * 时间值的相等键。
+ * `literal=false` → 用 `./temporal` 给的 `eqKey`（`=` 口径：按瞬时、只到秒）；
+ * `literal=true` → 用 `identity`（`is()` 口径：按写法）。
+ * 都缺则退回 `kind|iso`。
  */
-function temporalKey(t: FeelTemporal): string {
-  return t.eqKey ?? `${t.category ?? t.kind}|${t.iso}`;
+function temporalKey(t: FeelTemporal, literal: boolean): string {
+  const key = literal ? t.identity : t.eqKey;
+  return key ?? `${t.category ?? t.kind}|${t.iso}`;
 }
 
-/** 深相等（列表按元素、上下文按键、时间值按 `eqKey`） */
+/** 深相等（列表按元素、上下文按键、时间值按 `eqKey`）—— `=` 口径 */
 export function deepEquals(a: Value, b: Value): boolean {
+  return deepEq(a, b, false);
+}
+
+/**
+ * 深相等 · `is()` 口径：只有时间值的键不同（见 `FeelTemporal.identity`）。
+ * `is(@"2002-04-02T12:00:00-01:00", @"2002-04-02T17:00:00+04:00")` → false，
+ * 而同一对值的 `=` 是 true（TCK 0068 datetime_012 vs 0103 datetime_004）。
+ */
+export function literalEquals(a: Value, b: Value): boolean {
+  return deepEq(a, b, true);
+}
+
+function deepEq(a: Value, b: Value, literal: boolean): boolean {
   if (a === null && b === null) return true;
   if (a === null || b === null) return false;
 
@@ -92,29 +140,32 @@ export function deepEquals(a: Value, b: Value): boolean {
     if (!isTemporal(a) || !isTemporal(b)) return false;
     // 两个 duration 类型之间不相等（也不是"未知"，调用方按类型错误处理）
     if ((a.category ?? a.kind) !== (b.category ?? b.kind)) return false;
-    return temporalKey(a) === temporalKey(b);
+    return temporalKey(a, literal) === temporalKey(b, literal);
   }
 
   if (isRange(a) || isRange(b)) {
     if (!isRange(a) || !isRange(b)) return false;
+    // `test` 是**前缀写法判别位**：端点相同的 `(< 10)` 与 `(null..10)` 必须**不相等**
+    // （TCK 0068 range_006~010），而 `(< 10) = (< 10)` 相等（range_006_a）。
+    if ((a.test ?? null) !== (b.test ?? null)) return false;
     return (
       a.fromInclusive === b.fromInclusive &&
       a.toInclusive === b.toInclusive &&
-      deepEquals(a.from, b.from) &&
-      deepEquals(a.to, b.to)
+      deepEq(a.from, b.from, literal) &&
+      deepEq(a.to, b.to, literal)
     );
   }
 
   if (isList(a) && isList(b)) {
     if (a.length !== b.length) return false;
-    return a.every((x, i) => deepEquals(x, b[i] ?? null));
+    return a.every((x, i) => deepEq(x, b[i] ?? null, literal));
   }
 
   if (isContext(a) && isContext(b)) {
     const ak = a.keys();
     const bk = b.keys();
     if (ak.length !== bk.length) return false;
-    return ak.every((k) => b.has(k) && deepEquals(a.get(k) ?? null, b.get(k) ?? null));
+    return ak.every((k) => b.has(k) && deepEq(a.get(k) ?? null, b.get(k) ?? null, literal));
   }
 
   if (typeof a === 'object' || typeof b === 'object') return false;

@@ -14,8 +14,22 @@
  * 规范把它们写成 `list…`，命名参数对它们没有实际意义。
  */
 
+/**
+ * 一个**形参位**：要么一个名字，要么**一组别名**（同名重载）。
+ *
+ * 别名位是为 `context put` 而设 —— 规范对同一位置给了两套签名
+ * （`key` 取字符串 / `keys` 取字符串列表），两套的形参位相同、语义不同，
+ * 只能靠"你写的是哪个名"来分流（见 `core/types.ts` 的 `NativeFn` 第四参）。
+ */
+export type ParamSlot = string | readonly string[];
+
+/** 展平一个形参位的全部可接受名字（错误提示 / 校验用） */
+export function slotNames(slot: ParamSlot): readonly string[] {
+  return typeof slot === 'string' ? [slot] : slot;
+}
+
 /** 规范名 → 形参名（按位置顺序，必需参数在前；可选参数也登记，缺省由实现兜） */
-const PARAMS: Record<string, readonly string[]> = {
+const PARAMS: Record<string, readonly ParamSlot[]> = {
   // ---- 数值 ----
   abs: ['n'],
   ceiling: ['n', 'scale'],
@@ -77,7 +91,12 @@ const PARAMS: Record<string, readonly string[]> = {
   'get value': ['m', 'key'],
   'get entries': ['m'],
   context: ['entries'],
-  'context put': ['context', 'key', 'value'],
+  /*
+   * `context put(context, key, value)` 与 `context put(context, keys, value)`
+   * 是**同名重载**：位置相同、名字不同（`key` 取单个字符串、`keys` 取字符串列表）。
+   * 合并在一个位置上，靠 `NativeFn` 第四参（实际用的形参名）分流。
+   */
+  'context put': ['context', ['key', 'keys'], 'value'],
   'context merge': ['contexts'],
   // ---- 其他 ----
   is: ['value1', 'value2'],
@@ -101,12 +120,12 @@ const PARAMS: Record<string, readonly string[]> = {
 };
 
 /** 查某个函数的形参名表；未登记 → `null`（调用方据此判断"不支持命名参数"） */
-export function paramNamesOf(fnName: string): readonly string[] | null {
+export function paramNamesOf(fnName: string): readonly ParamSlot[] | null {
   return PARAMS[fnName] ?? null;
 }
 
 /** 追加/覆盖一条形参名（别名注册用，见 `builtins/registry.ts`） */
-export function registerParams(name: string, params: readonly string[]): void {
+export function registerParams(name: string, params: readonly ParamSlot[]): void {
   PARAMS[name] = params;
 }
 

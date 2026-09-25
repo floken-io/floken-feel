@@ -68,6 +68,13 @@ const optsFor = (c) => {
   return types ? { ...OPTIONS, types } : OPTIONS;
 };
 
+/** 空 FeelContext（求 `{}` 得来，避免依赖引擎未公开导出的构造器） */
+let EMPTY_CTX = null;
+function emptyCtx(opts) {
+  if (!EMPTY_CTX) EMPTY_CTX = evaluate('{}', undefined, opts).value;
+  return EMPTY_CTX;
+}
+
 // ---------- R2：相等判定 ----------
 
 function numEq(a, b) {
@@ -144,7 +151,18 @@ for (const c of cases) {
 
   try {
     const opts = optsFor(c);
-    const ctx = c.context ? evaluate(c.context, undefined, opts).value : undefined;
+    let ctx = c.context ? evaluate(c.context, undefined, opts).value : undefined;
+    /*
+     * DMN 语义：一个 decision 的输入包括它 `informationRequirement` 引用的其他 decision。
+     * 例 `1146-decision014` = `context put(context01, "a", 2)`，`context01` 是同模型的另一个
+     * decision（`{a: 1}`）。extract 已把它展成**依赖序**的 `deps` 列表，这里逐个求值并绑进作用域。
+     * 不这么做的话，这类断言只会拿到 `null`，被误记成引擎失配（2026-09-25 修）。
+     */
+    for (const dep of c.deps ?? []) {
+      const base = isContext(ctx) ? ctx : emptyCtx(opts);
+      const value = evaluate(dep.source, base, opts).value;
+      ctx = base.with({ [dep.name]: value });
+    }
     let actual;
     let threw = false;
     let error = null;

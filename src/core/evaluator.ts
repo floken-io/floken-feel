@@ -21,14 +21,16 @@ import {
   operandTypeError,
   optionError,
   temporalNotLoaded,
+  undefinedResultError,
   type Diagnostic,
 } from './errors.js';
-import { paramNamesOf } from './function-params.js';
+import { paramNamesOf, slotNames } from './function-params.js';
 import {
   compareValues,
   deepEquals,
   feelTypeName,
   rangeContains,
+  rangeTestMatches,
   sameTypeFamily,
   toFeelContext,
   toNumber,
@@ -283,22 +285,40 @@ function reorderNamedArgs(
   fnName: string | null,
   names: readonly (string | null)[],
   args: Node[],
-): Node[] {
+): { nodes: Node[]; used: (string | null)[] } {
   if (fnName === null) throw namedArgError('unsupported', 'expression');
   const params = paramNamesOf(fnName);
   if (!params) throw namedArgError('unsupported', fnName);
 
   const out: (Node | null)[] = new Array<Node | null>(params.length).fill(null);
+  /*
+   * 逐位记录"这一位实际用的是哪个形参名"。
+   * 匿名函数 / 普通位置参数下是 `null`；别名位（`context put` 的 `key`/`keys`）
+   * 靠它把"同一个位置上的两套签名"分开 —— 见 `core/types.ts` 的 `NativeFn`。
+   */
+  const used: (string | null)[] = new Array<string | null>(params.length).fill(null);
   for (let i = 0; i < args.length; i += 1) {
     const name = names[i] ?? null;
     const arg = args[i] as Node;
     if (name === null) throw namedArgError('mixed', fnName);
-    const idx = params.indexOf(name);
-    if (idx < 0) throw namedArgError('unknown', fnName, { name, allowed: params });
-    if (out[idx] !== null) throw namedArgError('duplicate', fnName, { name, allowed: params });
+    const idx = params.findIndex((slot) => slotNames(slot).includes(name));
+    if (idx < 0) {
+      throw namedArgError('unknown', fnName, { name, allowed: params.flatMap(slotNames) });
+    }
+    if (out[idx] !== null) throw namedArgError('duplicate', fnName, { name, allowed: params.flatMap(slotNames) });
     out[idx] = arg;
+    used[idx] = name;
   }
-  return out.map((a) => a ?? NULL_NODE);
+  return { nodes: out.map((a) => a ?? NULL_NODE), used };
+}
+
+/**
+ * 区间的**成员判定**，两种写法分流：
+ * 显式区间（`[1..10]`）按端点包含；前缀一元测试写法（`(< 5)` / `(!=5)`）按运算符判。
+ * 分流点是 `FeelRange.test`（见 `core/types.ts`）。
+ */
+function rangeMatch(range: FeelRange, value: Value): Value {
+  return range.test === undefined ? rangeContains(range, value) : rangeTestMatches(range, value);
 }
 
 /** 区间的四个属性（DMN 1.4 §10.3.4.3）：`.start` / `.end` / `.start included` / `.end included` */
@@ -480,16 +500,13 @@ export function evaluateNode(
 
     // FEEL 方括号：数字 → 下标（1-based，负号倒数）；列表 → 多下标；其余 → 过滤
     case 'filter': {
-      const base = evaluateNode(node.base, ctx, warnings, builtins, runtime);
-      if (!isList(base)) {
-        diag(
-          warnings,
-          FEEL_DIAGNOSTIC_CODES.EVAL_TYPE_MISMATCH,
-          'Filter/index access requires a list',
-          node,
-        );
-        return null;
-      }
+      const raw = evaluateNode(node.base, ctx, warnings, builtins, runtime);
+      /*
+       * FEEL 10.3.1.8：**非列表的基底按单元素列表处理** ——
+       * `100[1]` → `100`、`"foo"[1]` → `"foo"`、`true[true]` → `[true]`、`true[false]` → `[]`。
+       * 此前对非列表直接给 null + 诊断，TCK 0069 的 012~023 与 0068 的 list_006~014 全错。
+       */
+      const base = isList(raw) ? raw : [raw];
       // 先在原上下文试算（静默）：能算出数字/列表即为「下标」语义
       const probe = evaluateNode(node.condition, ctx, [], builtins, runtime);
       if (typeof probe === 'number') return listAt(base, probe);
@@ -512,11 +529,12 @@ export function evaluateNode(
         );
       }
       const domain = evaluateNode(node.domain, ctx, warnings, builtins, runtime);
-      if (isRange(domain)) return rangeContains(domain, v);
+      // 区间：前缀写法（`(< 5)` / `(!=5)`）按运算符判，显式写法按端点包含判
+      if (isRange(domain)) return rangeMatch(domain, v);
       if (isList(domain)) {
         // 列表成员判定：**元素本身是区间时按包含**（`1 in [[2..4], [1..3]]` → true），
         // 否则按相等。三值逻辑：任一项为真 → true；否则有未定 → null；全假 → false。
-        const results = domain.map((x) => (isRange(x) ? rangeContains(x, v) : deepEquals(x, v)));
+        const results = domain.map((x) => (isRange(x) ? rangeMatch(x, v) : deepEquals(x, v)));
         if (results.some((r) => r === true)) return true;
         if (results.some((r) => r === null)) return null;
         return false;
@@ -569,6 +587,7 @@ export function evaluateNode(
         evaluateNode(node.to, ctx, warnings, builtins, runtime),
         node.fromInclusive,
         node.toInclusive,
+        node.test,
       );
 
     // unary tests 列表独立求值：`?` 由上下文提供（`in` 已在自身分支内绑定 `?`）
@@ -582,6 +601,14 @@ export function evaluateNode(
       const entries = new Map<string, Value>();
       let scope = ctx;
       for (const e of node.entries) {
+        /*
+         * 重复键无定义（DMN14-178）：`"返回包含全部条目的新上下文"` 在键重复时
+         * 根本做不到，规范与 TCK 0057 `008` 都判为错误，而不是"后者覆盖前者"。
+         * 放在求值期而非语法期 —— 语法上 `{a:1, a:2}` 完全合法。
+         */
+        if (entries.has(e.key)) {
+          throw undefinedResultError('context', { reason: 'duplicate entry key', key: e.key });
+        }
         const v = evaluateNode(e.value, scope, warnings, builtins, runtime);
         entries.set(e.key, v);
         scope = scope.with({ [e.key]: v });
@@ -626,9 +653,10 @@ export function evaluateNode(
       }
 
       // 命名参数 → 先按形参名表对位（DMN 1.4 §10.3.2），再逐项求值
-      const argNodes = node.argNames
+      const reordered = node.argNames
         ? reorderNamedArgs(fnName, node.argNames, node.args)
-        : node.args;
+        : null;
+      const argNodes = reordered ? reordered.nodes : node.args;
       const args = argNodes.map((a) => evaluateNode(a, ctx, warnings, builtins, runtime));
 
       if (!fn) {
@@ -642,7 +670,7 @@ export function evaluateNode(
         throw functionNotAllowed(fnName, [...runtime.allowed]);
       }
 
-      return fn(args, ctx, runtime);
+      return fn(args, ctx, runtime, reordered?.used);
     }
 
     case 'unary': {
@@ -810,11 +838,11 @@ export function evalUnaryTerm(
   builtins: Record<string, NativeFn> = BUILTINS,
   runtime?: FeelEvalRuntime,
 ): Value {
-  // 区间 → 包含判定
+  // 区间 → 包含判定（前缀写法按运算符判，见 `rangeMatch`）
   if (term.type === 'range') {
     const range = evaluateNode(term, ctx, warnings, builtins, runtime);
     if (!isRange(range)) return null;
-    return rangeContains(range, ctx.get('?') ?? null);
+    return rangeMatch(range, ctx.get('?') ?? null);
   }
 
   // not(...) → 对各项取反
