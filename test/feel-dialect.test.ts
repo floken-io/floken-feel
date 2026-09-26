@@ -67,6 +67,53 @@ describe('FEEL 口径总校验（不是 B-FEEL）', () => {
   });
 });
 
+describe('位置 / 长度这类 number 形参不做隐式转换', () => {
+  /*
+   * ⚠️ 曾与字符串函数口径不一致（用宽松 `toNumber`）：`sublist([1,2,3], "2")` 得 `[2,3]`、
+   * `sort([3,1], 1)` 退回默认排序得 `[1,3]`。TCK 对 `sublist` / `insert before` / `remove(`
+   * **命中 0 条**，同样属于盲区。
+   */
+  it('位置 / 长度 / 比较器 传错类型 → null（+ARG_TYPE 诊断）', () => {
+    for (const src of [
+      'sublist([1,2,3], "2")',
+      'sublist([1,2,3], 1, "2")',
+      'insert before([1,3], "1", 2)',
+      'remove([1,2,3], "1")',
+      'sort([3,1], 1)', // 第二参不是函数 → 不退回默认排序
+      'substring("abc", "1")',
+    ]) {
+      const r = evaluate(src);
+      expect(r.value, src).toBe(null);
+      expect(r.warnings.some((w: { code?: string }) => w.code === 'FEEL_EVAL_ARG_TYPE'), src).toBe(
+        true,
+      );
+    }
+  });
+
+  it('合法位置参数不受影响', () => {
+    expect(evaluate('sublist([1,2,3], 2)').value).toEqual([2, 3]);
+    expect(evaluate('sublist([1,2,3], 1, 2)').value).toEqual([1, 2]);
+    expect(evaluate('sublist([1,2,3], -2)').value).toEqual([2, 3]);
+    expect(evaluate('remove([1,2,3], 2)').value).toEqual([1, 3]);
+    expect(evaluate('insert before([1,3], 2, 2)').value).toEqual([1, 2, 3]);
+    expect(evaluate('sort([3,1,2])').value).toEqual([1, 2, 3]);
+    expect(evaluate('substring("foobar", 3)').value).toBe('obar');
+    // TCK 1103#010：length 允许小数（3.8 → 取 3）
+    expect(evaluate('substring("foobar", 3, 3.8)').value).toBe('oba');
+  });
+
+  /*
+   * ★ 命名调用的陷阱：`reorderNamedArgs` 后实参数组长度**恒等于形参个数**，缺省位补 `null`。
+   * 故**可选**形参（`substring` / `sublist` 的 `length`）拿到显式 `null` 时要当"未给"，
+   * 不能当类型错误 —— 否则 TCK 1103#011 `substring(string:"foobar", start position :3)` 会退化。
+   */
+  it('★ 命名调用：可选形参缺省补 null 时不得报类型错误', () => {
+    expect(evaluate('substring(string:"foobar", start position :3)').value).toBe('obar');
+    expect(evaluate('substring("foobar", 3, null)').value).toBe('obar');
+    expect(evaluate('sublist([1,2,3], 2, null)').value).toEqual([2, 3]);
+  });
+});
+
 describe('字符串函数不做隐式转换（形参就是 string）', () => {
   /*
    * ⚠️ 曾与同档的 `contains` / `replace`（它们用严格 `reqString`）口径不一致。

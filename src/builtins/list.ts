@@ -5,9 +5,23 @@
  */
 
 import { isFunction, isList, type NativeFn, type Value } from '../core/types.js';
-import { compareValues, deepEquals, feelTypeName, toNumber } from '../core/values.js';
+import { compareValues, deepEquals, feelTypeName } from '../core/values.js';
 import { argRangeError, argTypeError } from '../core/errors.js';
-import { asList, EMPTY_CONTEXT, requireArity, spread, strictNumericList } from './helpers.js';
+import {
+  asList,
+  EMPTY_CONTEXT,
+  reqNumber,
+  requireArity,
+  spread,
+  strictNumericList,
+} from './helpers.js';
+
+/*
+ * ★ 位置/长度这类 `number` 形参**不做隐式转换**（与字符串函数 §同口径）：
+ * `sublist([1,2,3], "2")` 曾因宽松 `toNumber` 得出 `[2,3]`，规范上是类型错误 → `null` + 诊断。
+ * ⚠️ TCK 对 `sublist` / `insert before` / `remove(` / `list replace` **命中 0 条**，
+ * 官方语料完全没覆盖它们，故 1995/1995 掩盖了这一处宽松。
+ */
 
 export const LIST_BUILTINS: Record<string, NativeFn> = {
   // ----- 查询 -----
@@ -34,9 +48,12 @@ export const LIST_BUILTINS: Record<string, NativeFn> = {
   // ----- 截取 -----
   sublist: (a) => {
     const list = asList(a[0] ?? null);
-    const start = toNumber(a[1] ?? null);
-    if (list === null || start === null || start === 0) return null;
-    const len = a.length > 2 ? toNumber(a[2] ?? null) : null;
+    if (list === null) return null;
+    const start = reqNumber(a, 1, 'sublist', 'start position');
+    // `start === 0` 在 FEEL 的 1-based 位置里非法 → 结果未定义（不是类型错误）
+    if (start === 0) return null;
+    // 同 `substring`：`length` 可选，命名调用的缺省位会补 null → 当"未给"，不是类型错误
+    const len = (a.length > 2 ? (a[2] ?? null) : null) === null ? null : reqNumber(a, 2, 'sublist', 'length');
     const from = start > 0 ? start - 1 : Math.max(0, list.length + start);
     return len === null ? list.slice(from) : list.slice(from, from + Math.max(0, len));
   },
@@ -49,8 +66,8 @@ export const LIST_BUILTINS: Record<string, NativeFn> = {
   },
   'insert before': (a) => {
     const list = asList(a[0] ?? null);
-    const pos = toNumber(a[1] ?? null);
-    if (list === null || pos === null) return null;
+    if (list === null) return null;
+    const pos = reqNumber(a, 1, 'insert before', 'position');
     if (pos < 1 || pos > list.length + 1) return null;
     const out = [...list];
     out.splice(pos - 1, 0, a[2] ?? null);
@@ -58,8 +75,8 @@ export const LIST_BUILTINS: Record<string, NativeFn> = {
   },
   remove: (a) => {
     const list = asList(a[0] ?? null);
-    const pos = toNumber(a[1] ?? null);
-    if (list === null || pos === null) return null;
+    if (list === null) return null;
+    const pos = reqNumber(a, 1, 'remove', 'position');
     if (pos < 1 || pos > list.length) return null;
     const out = [...list];
     out.splice(pos - 1, 1);
@@ -196,6 +213,9 @@ export const LIST_BUILTINS: Record<string, NativeFn> = {
         if (r === false) return 1;
         return 0;
       });
+    } else if (pred !== null) {
+      // 给了第二参却不是函数 → 类型错误（不是"退回默认排序"）
+      throw argTypeError('sort', 'function', 'function', feelTypeName(pred));
     } else {
       arr.sort((x, y) => compareValues(x, y) ?? 0);
     }

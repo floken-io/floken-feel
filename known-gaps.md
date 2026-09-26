@@ -88,7 +88,7 @@ S-FEEL 子路径 / `range()` / `list replace` / duration 取负。
 | **六参 `date and time(y, m, d, h, m, s)`** | 返回 `null`（未实现该签名）。`feelin` 同样不支持（报 `FUNCTION_INVOCATION_FAILURE`），TCK `1117` 也未测。需要时再补 |
 | **`now()` 的输出不带时区** | 我们给本地墙上时间（如 `2026-09-26T16:17:26.182`），`feelin` 给带时区名（`…@Asia/Shanghai`）。TCK 只测 `now() instance of date and time`，未覆盖字符串形态。FEEL 的 date and time 本就允许不带时区，故非缺陷；若要改成带时区需先确认下游（dmn）依赖 |
 | **DMN 1.6 的 B-FEEL 方言** | 未实现（它要求第二套语义开关：二值逻辑、数值错→0、字符串错→""、日期错→epoch）。见 §2：本包实现的是 **FEEL** |
-| **`substring` 的 `start` 走宽松转换** | `substring("abc", "1")` 的 `start` 目前用 `toNumber` 宽松接受字符串。字符串**实参**已严格化（§2），位置参数尚未，待确认 TCK 口径后再动 |
+| **`is defined(value)`** | 返回 `null`（未实现）。它**不在 OMG 规范的内置函数表**里（是 Camunda / Drools 的扩展），`feelin` 同样没有。故属刻意不做，不计入 106 个规范名 |
 | **A 口径 3495（全量 DMN TCK）** | 归 `floken-dmn`（需要 DRG 元素图 + 决策表命中策略），本包没有 DMN 引擎，跑不出来 |
 
 ---

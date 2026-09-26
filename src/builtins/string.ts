@@ -7,8 +7,8 @@
 
 import { isList, type NativeFn, type Value } from '../core/types.js';
 import { argTypeError } from '../core/errors.js';
-import { feelTypeName, toNumber, toStr } from '../core/values.js';
-import { requireArity } from './helpers.js';
+import { feelTypeName } from '../core/values.js';
+import { reqNumber, requireArity } from './helpers.js';
 
 /** 把 FEEL 的 1-based（可负）起点换算成 0-based 下标 */
 function toIndex(start: number, length: number): number {
@@ -282,7 +282,9 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
    * `contains(string, match)`：两个实参都必须是字符串；`null` / 非字符串 → **抛**
    * （默认模式 `call` 边界转成 `null` + 诊断，严格模式向外抛 —— TCK 1110#001~#003 标 errorResult）。
    *
-   * ⚠️ `starts with` / `ends with` 仍按 toStr+null 处理：TCK 对它们没有这类 errorResult 用例。
+   * ★ 本档所有 `string` 形参都走这里（`reqString`）：`starts with` / `ends with` /
+   * `string length` / `upper case` / `lower case` / `substring` / `substring before` /
+   * `substring after` 曾与 `contains` 口径不一致（用宽松 `toStr`），现已统一为严格。
    */
   contains: (a) => {
     requireArity(a, 'contains', 2);
@@ -332,9 +334,14 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
    */
   substring: (a) => {
     const s = reqString(a, 0, 'substring', 'string');
-    const start = toNumber(a[1] ?? null);
-    if (start === null || start === 0) return null;
-    const len = a.length > 2 ? toNumber(a[2] ?? null) : null;
+    const start = reqNumber(a, 1, 'substring', 'start position');
+    if (start === 0) return null;
+    /*
+     * ⚠️ `length` 是**可选**形参：命名调用（`substring(string:"…", start position :3)`）经
+     * `reorderNamedArgs` 后长度恒等于形参个数，**缺省位补 null** —— 故显式 null 要当"未给"，
+     * 不能当类型错误（TCK 1103#011 正是这条）。
+     */
+    const len = (a.length > 2 ? (a[2] ?? null) : null) === null ? null : reqNumber(a, 2, 'substring', 'length');
     const chars = [...s];
     const from = toIndex(start, chars.length);
     const picked = len === null ? chars.slice(from) : chars.slice(from, from + Math.max(0, len));
