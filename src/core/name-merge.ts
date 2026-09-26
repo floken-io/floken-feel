@@ -12,9 +12,19 @@
  * 1. **优先匹配「最长多词内置名」**：只有**整体**命中 `spaced` 表才算数。
  *    于是 `date and time` 合并，而 `date and x`（`date` 变量 + 逻辑与）**不会**被误并 —— 这是
  *    只判"前缀"的写法做不到的。
- * 2. 否则做**通用名字合并**：相邻的 `name` token 合成一个名字（FEEL 允许名字含空格与撇号）。
+ * 2. 否则做**通用名字合并**：相邻的 `name` token 合成一个名字（FEEL 允许名字含空格与撇号）；
+ *    名字**后面紧跟的数字**一并吸收（`decision A 2.1` / `Flight 234` —— 见下方 ★）。
  * 3. 关键字**不参与**通用合并（`and`/`in`/`return`/`then` 必须保持关键字身份）；
  *    只有规则 1 命中时，才允许关键字被吸收（`date and time` 里的 `and`）。
+ * 4. 连续空格归一成**一个**空格（规范写法条：`decision  A  1` 与 `decision A 1` 同名）。
+ *
+ * ★ 为什么要吸收数字（DMN 1.5 §10.3.1.1：名字后续字符含 digits 与 `.`）：
+ *   TCK 0034 的决策名就是 `decision A 1` / `decision A 2.1` / `decision C 3`。
+ *   只合并 `name name` 会得到 `decision A` + 数字 `2.1` → **语法错误**，整组 10 条全抛。
+ *
+ * ⚠️ 这样做不会抢走任何**现有合法**表达式的语义：名字后**直接**跟数字在 FEEL 里
+ *   原本就是语法错（两个值之间没有运算符），吸收只是把"必然报错"变成"按名字解析"。
+ *   有运算符的（`a - 1`、`a + 1`、`a[1]`、`a in [1..2]`）都不满足相邻条件，不受影响。
  */
 
 import type { Token } from './lexer.js';
@@ -77,10 +87,12 @@ export function mergeNames(
       continue;
     }
 
-    // 规则 2：通用名字合并（仅相邻 `name` token）
+    // 规则 2：通用名字合并（相邻 `name` token，并吸收紧随其后的数字）
     if (isPlainName(t)) {
       let j = i;
       while (isPlainName(tokens[j + 1])) j += 1;
+      // ★ 数字吸收：见文件头 ★（`decision A 2.1`）
+      while (tokens[j + 1]?.type === 'num') j += 1;
       if (j > i) {
         const last = tokens[j];
         out.push({
