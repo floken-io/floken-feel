@@ -256,11 +256,20 @@ evaluate('listContains([1,2], 2)').value;  // true
 | 数值 | `decimal` `floor` `ceiling` `abs` `modulo` `sqrt` `log` `exp` `odd` `even` `round` `round half up` `round half down` |
 | 聚合 | `min` `max` `sum` `mean` `median` `product` `stddev`（样本标准差，n<2 → null） |
 | 字符串 | `string` `string length` `upper case` `lower case` `contains` `starts with` `ends with` `substring` `substring before` `substring after` `replace` `matches` `split` `string join` |
-| 列表 | `list contains` `count` `sublist` `append` `concatenate` `insert before` `remove` `reverse` `index of` `union` `distinct values` `flatten` `sort` `mode` |
+| 列表 | `list contains` `count` `sublist` `append` `concatenate` `insert before` `remove` `reverse` `index of` `union` `distinct values` `flatten` `sort` `mode` **`list replace`**（★ DMN 1.5 新增） |
 | 布尔 | `not` `and` `or` `all` `any` |
 | 转换 | `string` `number` |
 | 上下文 | `get value` `get entries` `context` `context put` `context merge` |
+| 区间 | `before` `after` `meets` `met by` `overlaps` `overlaps before` `overlaps after` `finishes` `finished by` `includes` `during` `starts` `started by` `coincides` `is` **`range`**（★ DMN 1.5 增强） |
 | 函数 | `invoke` |
+| 时间 | 见 `./temporal` 档（`date` `time` `date and time` `duration` `years and months duration` `now` `today` 及分量访问器） |
+
+> **版本口径（2026-09-26 拍板：按最新规范，不做旧版兼容层）**：
+> 覆盖 **DMN 1.4 全量** + 已补齐的 **1.5/1.6 语言层**：
+> `list replace`（1.5）、**duration 取负** `-duration("PT1H")`（1.5）、`range("[18..21)")` 字符串构造（1.5）、
+> 科学计数法数字字面量 `1.2e3`（1.5）、`@"PT5H"` 时间字面量（1.4）。
+> **未做**：**B-FEEL**（1.6 新增的第二语义方言，需独立开关）、隐式 `date → date and time` 转换
+> （须与元模型升 1.6 同步做，否则会与 1.4 TCK 语料相冲）。详见 `05-包需求-floken-feel.md` §7.11。
 
 > 各域实现按域拆档在 `src/builtins/`（`numeric` / `string` / `list` / `boolean` / `conversion` / `context` / `function`），
 > 新增内置函数只需加到对应域文件，注册表自动汇总。

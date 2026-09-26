@@ -16,6 +16,7 @@ import { BUILTINS, registerBuiltin } from '../builtins/registry.js';
 import { NUMERIC_BUILTINS } from '../builtins/numeric.js';
 import { requireArity } from '../builtins/helpers.js';
 import { evaluate, type EvaluateOptions } from '../core/evaluator.js';
+import { TEMPORAL_UNARY_MINUS } from '../core/deferred.js';
 import {
   isTemporal,
   type EvalResult,
@@ -1305,6 +1306,30 @@ function localPlain(T: TemporalNS, d: Date, kind: FeelTemporal['kind']): FeelTem
 export const TEMPORAL_BUILTINS: Record<string, NativeFn> = {
   /** `@"…"` 字面量的类型分派（key 不是合法 FEEL 函数名，故用户无法手写调用） */
   '@': atLiteralFn(),
+  /**
+   * ★ **一元负号**（**DMN 1.5 新增**，Clauses 10.3.2.3.7 / 10.3.2.3.8）。
+   *
+   * 键名 `-@` 与 `@` 同源——都是 core 的**委托键**而非函数名（`-@` 不是合法 FEEL 标识符，
+   * 用户写不出这个调用）。core 的 `unary` 分支见到时间值就委托到这里。
+   *
+   * 只有 **duration** 有定义：`-duration("PT1H")` = `-PT1H`；
+   * `date` / `time` / `date and time` 取负**无定义** → 抛 `FEEL_EVAL_ARG_TYPE`
+   * （不是静默 null：那是调用非法，不是值未知，见 `helpers.ts` 全局口径）。
+   */
+  [TEMPORAL_UNARY_MINUS]: (args) => {
+    requireArity(args, TEMPORAL_UNARY_MINUS, 1);
+    const v = args[0] ?? null;
+    if (!isTemporal(v) || v.kind !== 'duration') {
+      throw argTypeError(TEMPORAL_UNARY_MINUS, 'operand', 'duration', feelTypeName(v));
+    }
+    const obj = v.raw as { negated?: () => unknown } | null;
+    const negated = typeof obj?.negated === 'function' ? obj.negated() : null;
+    if (negated === null || negated === undefined) {
+      throw argTypeError(TEMPORAL_UNARY_MINUS, 'operand', 'duration', feelTypeName(v));
+    }
+    // iso 用 `negated` 自身的规范文本（Temporal 对负时长输出 `-PT1H`，正是 FEEL 写法）
+    return wrap('duration', negated);
+  },
   now: (args, _ctx, rt) => {
     requireArity(args, 'now', 0);
     const T = getTemporal();

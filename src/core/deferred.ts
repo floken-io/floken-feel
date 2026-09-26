@@ -38,6 +38,20 @@ export const TEMPORAL_FUNCTIONS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * ★ 一元负号作用于**时间值**的延迟能力键（**DMN 1.5 新增**，Clauses 10.3.2.3.7 / 10.3.2.3.8：
+ * `-duration("PT1H")` 合法且等于 `-PT1H`）。
+ *
+ * 为什么它**不放进** `TEMPORAL_FUNCTIONS`：
+ * - `-@` 不是合法 FEEL 标识符，用户**写不出**这个调用，它不是"函数名"；
+ * - 那张表会被 `test/errors.test.ts` 当函数名逐个核查、并随主入口公开导出，
+ *   把一个运算符委托键塞进去会污染两处的语义。
+ * 它只是 `core/evaluator.ts` 的 `unary` 分支 → `./temporal` 实现的**委托键**，故单独定义。
+ *
+ * core 侧只做"值是时间值 → 委托给这个键"；真正取负的实现住在 `./temporal/index.ts`。
+ */
+export const TEMPORAL_UNARY_MINUS = '-@';
+
+/**
  * `./temporal` 独占的**属性名**（路径访问 `x.prop` 的右侧）。
  *
  * 与 `TEMPORAL_FUNCTIONS` 分开的原因是用途不同：这里是 `path` 节点的分派依据，

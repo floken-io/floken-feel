@@ -10,7 +10,7 @@
 
 import { parseExpression, parseUnaryTests } from './parser.js';
 import { BUILTINS } from '../builtins/registry.js';
-import { TEMPORAL_FUNCTIONS, TEMPORAL_PROPERTIES } from './deferred.js';
+import { TEMPORAL_FUNCTIONS, TEMPORAL_PROPERTIES, TEMPORAL_UNARY_MINUS } from './deferred.js';
 import {
   argTypeError,
   FEEL_DIAGNOSTIC_CODES,
@@ -889,6 +889,35 @@ export function evaluateNode(
 
     case 'unary': {
       const v = evaluateNode(node.operand, ctx, warnings, builtins, runtime);
+      /*
+       * ★ **DMN 1.5 起 duration 可取负**（Clauses 10.3.2.3.7 / 10.3.2.3.8）：
+       * `-duration("PT1H")` = `-PT1H`（1.4 及更早无此语义，取负是类型错误）。
+       *
+       * 取负要用 `Temporal.Duration.negated()`，而 core 不得 import `./temporal`
+       * （包内分层 / NFR-F12），故走**延迟能力委托键** `TEMPORAL_UNARY_MINUS`：
+       * 实现由 `./temporal` 注册进内置表，core 只认这个键。
+       * 时间值存在却找不到实现（未加载）→ 抛 `FEEL_NOT_LOADED_TEMPORAL`（不静默 null）。
+       */
+      if (isTemporal(v)) {
+        const impl = builtins[TEMPORAL_UNARY_MINUS];
+        if (!impl) throw temporalNotLoaded(TEMPORAL_UNARY_MINUS);
+        try {
+          return impl([v], ctx, runtime);
+        } catch (e) {
+          /*
+           * 与 `call` 节点**同一套**边界规则（AGENTS.md §5 / 规范 §10.3.2.13.1）：
+           * 非 duration 取负是 ARG_TYPE（参数/类型类）→ 默认 `null + 诊断`、
+           * `errorMode:'throw'` 下抛。若不在这里收口，`-date(...)` 会在默认模式下也抛出，
+           * 与"调用结果 unknown"的规范口径不一致。
+           */
+          if (e instanceof FeelError && PARAM_ERROR_CODES.has(e.code)) {
+            if (runtime?.errorMode === 'throw') throw e;
+            diag(warnings, e.code, e.message, node);
+            return null;
+          }
+          throw e;
+        }
+      }
       const n = num(v, runtime);
       if (n === null) {
         diag(

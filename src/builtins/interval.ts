@@ -88,7 +88,75 @@ function intervals(fnName: string, args: readonly Value[]): [FeelRange, FeelRang
   return [a, b];
 }
 
+/** 区间字面量串：`[18..21)` / `(1..10]` / `"a".."z"` 端点形态 */
+const RANGE_TEXT = /^([[(])\s*(.+?)\s*\.\.\s*(.+?)\s*([\])])$/;
+
+/** 科学计数法也要认（`2.3e-5` 是 DMN 1.5 起允许的数字字面量） */
+const NUMBER_TEXT = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
+
+/**
+ * 区间字面量的端点：数字（含科学计数法）或引号字符串。
+ * 其它形态（未加引号的裸名、时间字面量）—— 解析不了就返回 `null`，由调用方抛类型错误。
+ *
+ * ⚠️ 时间端点（`range("[2020-01-01..2020-12-31)")`）目前**不支持**：端点解析要走
+ * `./temporal` 的构造实现，而 `builtins/` 不得 import 域（包内分层），故留待后续按
+ * 延迟能力接入。**不静默返回 null** —— 解析不了即抛，避免出现"看着像区间其实是空"的结果。
+ */
+function endpointOf(text: string): Value | null {
+  const t = text.trim();
+  if (t === '') return null;
+  if (NUMBER_TEXT.test(t)) return Number(t);
+  const quote = t[0];
+  if (t.length >= 2 && (quote === '"' || quote === "'") && t[t.length - 1] === quote) {
+    return t.slice(1, -1);
+  }
+  return null;
+}
+
+function isPointLike(v: Value): boolean {
+  return !(v === null || isList(v) || isContext(v) || isFunction(v));
+}
+
 export const INTERVAL_BUILTINS: Record<string, NativeFn> = {
+  /**
+   * ★ `range` —— 区间**构造**（与上面 14 个关系函数不同：那组是判定，这个是造值）。
+   *
+   * 两种形态：
+   * - `range("[18..21)")` —— **DMN 1.5 增强形态**：由区间字面量串构造，开闭按括号
+   *   （`[` / `]` 闭，`(` / `)` 开）。规范示例即 `range("[18..21)")`。
+   * - `range(from, to)` —— 双参闭区间 `[from..to]`（含两端）。
+   *
+   * 端点形态：数字（含科学计数法）与引号字符串。其余 → 抛 `FEEL_EVAL_ARG_TYPE`（不静默 null）。
+   */
+  range: (args) => {
+    if (args.length === 1) {
+      const text = args[0] ?? null;
+      if (typeof text !== 'string') {
+        throw argTypeError('range', 'text', 'string', feelTypeName(text));
+      }
+      const m = RANGE_TEXT.exec(text.trim());
+      if (!m) throw argTypeError('range', 'text', 'range literal, e.g. "[18..21)"', text);
+      const [, open = '[', fromText = '', toText = '', close = ']'] = m;
+      const from = endpointOf(fromText);
+      const to = endpointOf(toText);
+      if (from === null || to === null) {
+        throw argTypeError(
+          'range',
+          'text',
+          'range literal with number or string endpoints',
+          text,
+        );
+      }
+      return makeRange(from, to, open === '[', close === ']');
+    }
+    requireArity(args, 'range', 2);
+    const from = args[0] ?? null;
+    const to = args[1] ?? null;
+    if (!isPointLike(from)) throw argTypeError('range', 'from', 'point', feelTypeName(from));
+    if (!isPointLike(to)) throw argTypeError('range', 'to', 'point', feelTypeName(to));
+    return makeRange(from, to, true, true);
+  },
+
   /** `a` 整体在 `b` 之前 */
   before: (args) => {
     const [a, b] = intervals('before', args);
