@@ -54,8 +54,16 @@ const TABLE: Array<[string, unknown]> = [
   ['date and time(true)', null],
   ['duration("a")', null],
 
-  // —— 条件表达式：FEEL 三值传播，B-FEEL 把 null 当 false ——
-  ['if null then 1 else 2', null], // B-FEEL: 2
+  /*
+   * —— 条件表达式：条件为 **null → 走 else**，不是三值传播成 null ——
+   * ★ 本条曾按「IBM 对照表」写成 `null`，被 **OMG TCK** 直接推翻。按既定判据（OMG > IBM > feelin）改判：
+   *   ① OMG TCK 0032-conditionals #003：`bool`=nil → `if bool then num+10 else num-10` 期望 **90**（else）；
+   *   ② 同组 #006：`aDate`=nil → `if aDate > date("2017-01-01") then … else …` 期望 **"World"**（else）；
+   *   ③ feelin（第三方）：`if null then 1 else 2` → 2。
+   *   两条互相独立的 OMG 用例 + 第三方实现一致；IBM 表此条是孤证，故降级。
+   *   规范读法：条件语义是「为真取 then，**否则**取 else」，null 属"否则"而非"条件本身出错"。
+   */
+  ['if null then 1 else 2', 2],
 ];
 
 describe('FEEL 口径总校验（不是 B-FEEL）', () => {
@@ -64,6 +72,19 @@ describe('FEEL 口径总校验（不是 B-FEEL）', () => {
       const r = evaluate(src);
       expect(r.value, `${src} 应为 FEEL 口径`).toEqual(expected);
     }
+  });
+
+  /*
+   * ★ 与上面那条**必须成对**读，否则容易把「null 走 else」误扩成「什么都走 else」：
+   *   条件是 **null** → 走 else（TCK 0032）；条件是 **非布尔非 null** → 类型错误，结果仍是 null。
+   *   （feelin 在这一条上取的是 JS 真值，`if 1 then 1 else 2` 会得 1 —— 那是它的宽松，不是规范。）
+   */
+  it('条件是 null 走 else，但条件是非布尔仍为 null（两者不得合并）', () => {
+    expect(evaluate('if null then 1 else 2').value).toBe(2);
+    expect(evaluate('if 1 then 1 else 2').value).toBeNull();
+    expect(evaluate('if "x" then 1 else 2').value).toBeNull();
+    expect(evaluate('if true then 1 else 2').value).toBe(1);
+    expect(evaluate('if false then 1 else 2').value).toBe(2);
   });
 });
 

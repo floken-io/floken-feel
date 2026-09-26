@@ -1151,7 +1151,13 @@ export function evaluateNode(
     case 'if': {
       const c = evaluateNode(node.cond, ctx, warnings, builtins, runtime);
       if (c === true) return evaluateNode(node.then, ctx, warnings, builtins, runtime);
-      if (c === false) return evaluateNode(node.else, ctx, warnings, builtins, runtime);
+      /*
+       * ★ **条件为 null 走 else 分支**（TCK 0032#003「simple 'if' condition for null」：
+       *   `bool` = null、`num` = 100，`if bool then num+10 else num-10` 期望 **90**）。
+       *   规范的条件语义是「为真取 then，**否则**取 else」，null 属"否则"。
+       *   注意与「条件不是布尔」区分：那是类型错误，仍是 `null`，不能落到 else。
+       */
+      if (c === false || c === null) return evaluateNode(node.else, ctx, warnings, builtins, runtime);
       return null;
     }
 
