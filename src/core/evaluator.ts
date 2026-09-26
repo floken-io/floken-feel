@@ -1054,7 +1054,23 @@ export function evaluateNode(
         if (scaling) {
           const impl = builtins[TEMPORAL_SCALE];
           if (!impl) throw temporalNotLoaded(TEMPORAL_SCALE);
-          return impl([lv, rv, node.op], ctx, runtime, undefined, builtins);
+          /*
+           * 与 `call` / `unary`（`-@`）**同一套**边界规则（AGENTS.md §5 / 规范 §10.3.2.13.1）：
+           * 算符表无此档（`duration * duration`、跨量纲 `duration / duration`、
+           * 另一侧不是数字）是 ARG_TYPE → 默认 `null + 诊断`、`errorMode:'throw'` 下抛。
+           * ⚠️ 不在这里收口的话，异常会**在默认模式下也抛出**，与 `10 * "2"` / `date * 2`
+           * 给「null + 诊断」的口径不一致（本项目四禁之一：禁止用抛表达"值未知"）。
+           */
+          try {
+            return impl([lv, rv, node.op], ctx, runtime, undefined, builtins);
+          } catch (e) {
+            if (e instanceof FeelError && PARAM_ERROR_CODES.has(e.code)) {
+              if (runtime?.errorMode === 'throw') throw e;
+              diag(warnings, e.code, e.message, node);
+              return null;
+            }
+            throw e;
+          }
         }
         /*
          * ★ 两个**非 duration** 时间值相减（`date - date`、`time - time`、

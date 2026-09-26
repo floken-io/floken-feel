@@ -1639,18 +1639,29 @@ export const TEMPORAL_BUILTINS: Record<string, NativeFn> = {
 
     // ① `duration / duration` → number（**必须同量纲**，跨量纲无定义）
     if (op === '/' && ld && rd) {
-      if (durationKindOf(ld) !== durationKindOf(rd)) return null;
+      // ★ 跨量纲 = 算符表无此档（不是"值未知"）→ 抛 ARG_TYPE，由 `call` 边界处置
+      //   （默认模式降级 null + 诊断，严格模式抛错）—— 与 `date * 2` 同一口径。
+      if (durationKindOf(ld) !== durationKindOf(rd)) {
+        throw argTypeError(TEMPORAL_SCALE, 'operands', 'same duration kind', `${feelTypeName(ld)} / ${feelTypeName(rd)}`);
+      }
       const b = durationTotal(rd);
+      // 除以零值 duration：**除零语义**，与 `1 / 0` 同族 → null，不抛（不是类型错误）
       if (b === 0) return null;
       return durationTotal(ld) / b;
     }
-    // ② `duration * duration` 无定义 → 交回 core 报错
-    if (ld && rd) return null;
+    // ② `duration * duration` 无定义 → ARG_TYPE
+    //   ⚠️ 原实现 `return null` 且注释写「交回 core 报错」—— 但 core 只是 `return impl(...)`
+    //   不再判错，结果是**静默 null**，与 `10 * "2"` / `null * 2` / `date * 2` 全给诊断的口径冲突
+    //   （违反 AGENTS.md §5「禁止用 null 表达出错」）。改为本档抛错，与 `-@` 同族一致。
+    if (ld && rd) throw argTypeError(TEMPORAL_SCALE, 'operands', 'duration and number', 'duration * duration');
 
     const d = ld ?? rd;
     const scalar = ld ? right : left;
-    if (!d || typeof scalar !== 'number' || !Number.isFinite(scalar)) return null;
+    if (!d || typeof scalar !== 'number' || !Number.isFinite(scalar)) {
+      throw argTypeError(TEMPORAL_SCALE, 'operand', 'duration and number', `${feelTypeName(d ?? left)} ${op} ${feelTypeName(scalar)}`);
+    }
     if (op === '/') {
+      // 同 ①：除零是语义，不是错误
       if (scalar === 0) return null;
       return scaleDuration(d, 1 / scalar);
     }

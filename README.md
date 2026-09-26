@@ -4,9 +4,10 @@ FEEL（Friendly Enough Expression Language）表达式语言的独立实现：
 给一串字符串 + 一组变量，返回一个值（外加一组诊断 warnings）。
 
 > 五个包里排**第一**施工（Q22）。需求见 `流程引擎包文档/05-包需求-floken-feel.md`。
-> 当前进度：**F2** —— F0（语言内核）→ F1（方括号统一语义 / `in` / `between` / 函数字面量 / 语法着色）
-> → F2（空格名与撇号名 / `instance of` / `clock` 注入 / S-FEEL 白名单 / 资源上限 / **错误与诊断契约**）。
-> 下一步 F3：TCK 跑分器 + 双判据闸门。
+> **当前进度：F3 收官（2026-09-26）** —— F0 语言内核 → F1（方括号统一语义 / `in` / `between` /
+> 函数字面量 / 语法着色）→ F2（空格名与撇号名 / `instance of` / `clock` 注入 / S-FEEL 白名单 /
+> 资源上限 / **错误与诊断契约**）→ F3（自研 parser + 时态 / 三值 / 区间 / 类型强制收敛）。
+> **官方 DMN TCK · B 口径：1995/1995（100%）**，79 个 FEEL label 中 77 组满分、0 组失败（详见 §1.3）。
 
 ---
 
@@ -460,7 +461,8 @@ highlight('if a > 1 then "x" else null // c');
   `?` 在普通表达式（非 unary test）里的完整语义。
 - `instance of` 的类型名里**不含** `day-time duration`（它含 `-`，会与减法词法冲突；
   需要时用 `duration` 判定）。
-- 未覆盖 DMN TCK 全量（F3 闸门目标：79 个 FEEL label 零退化 + 100% pass）。
+- ~~未覆盖 DMN TCK 全量~~ → **已达成（F3）**：79 个 FEEL label 零退化 + B 口径 1995/1995（100%）。
+  ⚠️ 剩的是**另一本账**：A 口径（完整 DMN TCK，含 DRG 遍历 / 决策表 / 命中策略）归 `floken-dmn`，本包无 DMN 引擎、跑不出来。
 - 时态比较：`date` / `time` / `dateTime` 互不可比较，`duration` 不可比较（对齐 feelin 行为）。
 - 名字字符集有意偏离 FEEL：只纳入 `'` 与 `^`，`- + * / .` 保留运算/路径语义（见 §3）。
 
@@ -522,13 +524,15 @@ core  ←  builtins  ←  temporal
 ```bash
 pnpm install
 pnpm build
-pnpm verify   # 六道通用门禁 + 第七道 check:tck-isolation
+pnpm verify   # 门禁：types / tests / pack / tck-isolation / deps（NFR-F12 递归 + Q32 实现源）
+pnpm tck      # B 口径跑分（2053 断言 / 计分 1995；加 --strict 走严格口径）
 ```
 
 ## 硬约束
 
-- **纯自研零依赖**：不引入 lezer-feel，词法/语法分析器全部自研；
-  feelin 源码只读不拷（Q9）。
+- **纯自研**：不引入 lezer-feel，词法/语法分析器全部自研；feelin 源码只读不拷（Q9）。
+  （唯一的**运行时依赖**是 `temporal-polyfill` —— Q33 定为普通 `dependencies` 且只由 `./temporal` 档加载，见 §6.1；
+  **语言内核 core 仍是零依赖**。）
 - **禁止自研日期库**（NFR-F11）：时态只来自 `temporal-polyfill/implementation`（ADR Q32，**不读原生 `Temporal`**）。
 - core/unary-tests **不得**静态引用时间实现源（NFR-F12，`check:deps` 递归兜底）；
   且 `check:deps` 会断言 temporal 产物里出现的是 `temporal-polyfill/implementation`、没有 `globalThis.Temporal`。

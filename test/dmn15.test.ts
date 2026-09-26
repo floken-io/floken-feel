@@ -166,6 +166,56 @@ describe('② duration 取负（DMN 1.5 Clauses 10.3.2.3.7/8）', () => {
   });
 });
 
+describe('②b duration 乘除（DMN 1.5 §10.3.2：duration × number / duration ÷ duration）', () => {
+  // ★ 这一档此前**已实现但零测试**（`TEMPORAL_SCALE` 委托键），本段把它钉死。
+
+  it('duration × number：交换律成立，两侧都给 duration', () => {
+    expect(evaluate('string(duration("PT1H") * 2)').value).toBe('PT2H');
+    expect(evaluate('string(2 * duration("PT1H"))').value).toBe('PT2H');
+  });
+
+  it('duration ÷ number：按分量等分', () => {
+    expect(evaluate('string(duration("PT1H") / 2)').value).toBe('PT30M');
+    expect(evaluate('string(duration("P1D") / 2)').value).toBe('PT12H');
+  });
+
+  it('years and months duration 缩放在**自己的量纲**内，不退化成秒', () => {
+    expect(evaluate('string(duration("P1Y2M") * 3)').value).toBe('P3Y6M');
+  });
+
+  it('乘 0 → 零值 duration（不是 null）；乘小数 → 分量进位', () => {
+    expect(evaluate('string(duration("PT1H") * 0)').value).toBe('PT0S');
+    expect(evaluate('string(duration("PT1H") * 1.5)').value).toBe('PT1H30M');
+  });
+
+  it('duration ÷ duration（**同量纲**）→ number', () => {
+    expect(evaluate('duration("PT2H") / duration("PT1H")').value).toBe(2);
+    // P1Y2M / P1Y = 14 月 / 12 月
+    expect(evaluate('duration("P1Y2M") / duration("P1Y")').value as number).toBeCloseTo(14 / 12, 12);
+  });
+
+  it('跨量纲相除无定义 → null（years-months vs days-time）', () => {
+    nullWithDiag('duration("P1Y") / duration("PT1H")');
+  });
+
+  it('duration × duration 无定义 → null（交回 core 报错）', () => {
+    nullWithDiag('duration("PT1H") * duration("PT1H")');
+  });
+
+  it('除以 0 → null（不是 Infinity）；除以零值 duration 同理', () => {
+    // ★ 除零是**语义**不是错误 —— 与 `1 / 0` 同族，故 null 且**不带诊断**
+    expect(evaluate('duration("PT1H") / 0').value).toBe(null);
+    expect(evaluate('duration("PT1H") / 0').warnings.length).toBe(0);
+    expect(evaluate('duration("PT1H") / duration("PT0S")').value).toBe(null);
+    expect(evaluate('duration("PT1H") / duration("PT0S")').warnings.length).toBe(0);
+  });
+
+  it('非数字另一侧 → null', () => {
+    nullWithDiag('duration("PT1H") / null');
+    nullWithDiag('duration("PT1H") * "2"');
+  });
+});
+
 describe('③ range() 区间构造', () => {
   it('字符串形态（DMN 1.5 增强）：开闭按括号', () => {
     const r = val('range("[18..21)")');
