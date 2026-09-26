@@ -335,7 +335,19 @@ export type Node =
   /** `value between low and high`（等价 `value >= low and value <= high`） */
   | { type: 'between'; value: Node; low: Node; high: Node; start: number; end: number }
   /** 函数字面量 `function(a, b) body`，闭包捕获定义处上下文 */
-  | { type: 'function'; params: string[]; body: Node; start: number; end: number }
+  | {
+      type: 'function';
+      params: string[];
+      /**
+       * ★ 形参**类型标注**（`function(arg: number) arg`，DMN 1.5 §10.3.14）。
+       * 未标注的形参是 `null`。**必须保留**：标注在**调用时**用来校验实参 ——
+       * TCK 0082 `fd_002` 就是这样一条（见 `evaluator` 的 `function` 分支）。
+       */
+      paramTypes?: (TypeSpec | null)[];
+      body: Node;
+      start: number;
+      end: number;
+    }
   | { type: 'list'; items: Node[]; start: number; end: number }
   | {
       type: 'range';

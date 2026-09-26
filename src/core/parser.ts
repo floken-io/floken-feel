@@ -454,20 +454,24 @@ class Parser {
       this.advance();
       this.expect('lparen');
       const params: string[] = [];
+      const paramTypes: (TypeSpec | null)[] = [];
       if (!this.at('rparen')) {
         do {
           params.push(this.expectName().value);
           /*
-           * **形参类型标注** `function(a: number) a`（DMN 1.4 §10.3.14，TCK 0092/0082）。
-           * 标注在此**只解析不保留**：FEEL 的函数体本身不做静态类型检查，
-           * 类型由调用方（DMN 的 BKM 调用）在**调用时**校验，不是本层的事。
+           * **形参类型标注** `function(a: number) a`（DMN 1.5 §10.3.14）。
+           *
+           * ★ 标注**必须保留**（此前这里写的是"只解析不保留"，被 TCK 0082 `fd_002`
+           *   证伪）：该用例是 `function(arg: number) arg` 后接 `fn("foo")`，
+           *   期望 **null**（errorResult）—— 带类型的形参在**调用时**校验实参，
+           *   类型不符则整个调用不适用。
            */
-          if (this.eat('colon')) this.parseTypeSpec();
+          paramTypes.push(this.eat('colon') ? this.parseTypeSpec() : null);
         } while (this.eat('comma'));
       }
       this.expect('rparen');
       const body = this.parseExpression();
-      return { type: 'function', params, body, start: t.start, end: body.end };
+      return { type: 'function', params, paramTypes, body, start: t.start, end: body.end };
     }
 
     // 分组 或 开区间 (a..b) / (a..b]

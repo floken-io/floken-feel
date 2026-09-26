@@ -535,6 +535,22 @@ function everyOf(results: readonly Value[]): Value {
  * `types` 是模型类型表；名字未命中且非内置 → 判 `false`（不是抛错：表达式的真值
  * 依然确定，只是"不是该类型的实例"）。
  */
+/** 类型规格的可读名字（`function(arg: number)` 的实参诊断用） */
+function typeSpecName(spec: TypeSpec): string {
+  switch (spec.kind) {
+    case 'named':
+      return spec.name;
+    case 'list':
+      return `list<${typeSpecName(spec.item)}>`;
+    case 'context':
+      return 'context';
+    case 'range':
+      return 'range';
+    default:
+      return 'function';
+  }
+}
+
 function instanceOfSpec(
   v: Value,
   spec: TypeSpec,
@@ -771,10 +787,40 @@ export function evaluateNode(
     // 函数字面量：闭包捕获**定义处**上下文，形参按位置绑定
     case 'function': {
       const { params, body } = node;
+      const paramTypes = node.paramTypes ?? [];
       // ★ 形参名要挂到函数值上：`list replace` 的 `match` 需按形参个数校验（见 `FeelFunction.params`）
       return makeFunction(
         'function',
         (args) => {
+          /*
+           * ★ **带类型标注的形参在调用时校验实参**（DMN 1.5 §10.3.14，TCK 0082 `fd_002`）：
+           *   `function(arg: number) arg` 被 `fn("foo")` 调用 → 整个调用不适用 → `null`。
+           *
+           *   走既有的双出口（`semanticFail`）：严格模式抛、宽松模式返回 null + 诊断，
+           *   与「内建函数实参不符」的处置完全一致。
+           *
+           * ⚠️ 只校验**实际传入**的实参：没传的那个位置原本绑 `null`，那是另一条
+           *   语义（缺参），不能在这里顺手改成"类型不符"。
+           */
+          for (let i = 0; i < paramTypes.length && i < args.length; i += 1) {
+            const spec = paramTypes[i];
+            if (!spec) continue;
+            const got = args[i] ?? null;
+            if (!instanceOfSpec(got, spec, runtime?.types, 0)) {
+              return semanticFail(
+                runtime,
+                () =>
+                  argTypeError(
+                    'function',
+                    params[i] ?? `#${i}`,
+                    typeSpecName(spec),
+                    feelTypeName(got),
+                  ),
+                warnings,
+                node,
+              );
+            }
+          }
           const bindings: Record<string, Value> = {};
           params.forEach((p, i) => {
             bindings[p] = args[i] ?? null;
