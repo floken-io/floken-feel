@@ -71,7 +71,7 @@ S-FEEL 子路径 / `range()` / `list replace` / duration 取负。
 | 项 | 说明 |
 |---|---|
 | **错误恢复 / 部分树** | `feelin` 基于 lezer（LR 容错解析），任何输入都产出一棵带 `error` 节点的树。我们是递归下降、**fail-fast**。这是**编辑器体验能力**，不是 FEEL 规范能力，TCK 一条不考。已决策挂到 **M6（designer 接入）**再按实际需要补；届时硬约束是 `evaluateStrict` **必须仍旧抛**（保护 TCK 严格口径），只有宽松模式允许部分求值 |
-| **`dialect` 第三参** | 我们用 `EvaluateOptions` 对象承载选项（`errorMode` / `strictCoercion` / `clock` / `allowedFunctions` / 资源上限 / `builtins`），不提供 `evaluate(expr, ctx, dialect)` 的位置参数形态 |
+| **`dialect` 第三参** | 我们用 `EvaluateOptions` 对象承载选项（`errorMode` / `clock` / `allowedFunctions` / 资源上限 / `builtins`），不提供 `evaluate(expr, ctx, dialect)` 的位置参数形态 |
 
 ### 3.3 值形态差异（唯一一处）
 

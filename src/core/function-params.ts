@@ -107,6 +107,13 @@ const PARAMS: Record<string, readonly ParamSlot[]> = {
   // ---- 其他 ----
   is: ['value1', 'value2'],
   invoke: ['function', 'params'],
+  /*
+   * `range` 只此一参，名字逐字为 `from`（DMN 1.5 §10.3.4）。
+   * 登记它的理由不是"支持命名调用"，而是让**错名**能被认出来：
+   * TCK 1156 decision012 的 `range(fron: "[1..3]")` 必须给 `null`（不是按位置硬套）。
+   * 上面 14 个区间关系函数仍未登记（点版 / 区间版两套形参名，见 `interval.ts` 文件头）。
+   */
+  range: ['from'],
   // ---- 时间（实现见 ./temporal）----
   date: ['from', 'year', 'month', 'day'],
   time: ['from', 'hour', 'minute', 'second', 'offset'],

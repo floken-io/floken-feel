@@ -85,8 +85,6 @@ export interface EvaluateOptions {
   maxDepth?: number;
   /** 协作式超时：仅在求值步之间的检查点生效（同步求值无法强杀） */
   timeoutMs?: number;
-  /** 严格类型强制：为 true 时不接受字符串→数字的隐式转换 */
-  strictCoercion?: boolean;
   /**
    * 模型**类型表**：`itemDefinition` 名 → 类型规格。
    * `instance of t255` / `instance of tNumberList` 这类用例只有拿到模型定义才判得了
@@ -105,7 +103,8 @@ export interface EvaluateOptions {
    * ⚠️ 两种模式**都不变**的硬错误（照旧抛）：语法错、能力未加载
    * `FEEL_NOT_LOADED_TEMPORAL`、S-FEEL 白名单越界、资源上限 —— 这些是调用方无法继续的问题。
    *
-   * ⚠️ 与 `strictCoercion` **无关**：后者管的是"字符串→数字要不要隐式转换"。
+   * ⚠️ 别把它当成"严格模式"：它**只**切换语义层错误的出口，不做类型收紧。
+   *   算符表里没有的组合（`10 + "10"`）两种模式下都是 `null + 诊断` / 抛，不存在"宽容放行"。
    */
   errorMode?: 'null' | 'throw';
 }
@@ -116,7 +115,6 @@ export interface EvaluateOptions {
  */
 export interface FeelEvalRuntime extends EvalRuntime {
   allowed?: ReadonlySet<string>;
-  strict: boolean;
   /** 求值语义层错误处置：`'null'`（默认，规范）| `'throw'`（TCK 严格口径） */
   errorMode: 'null' | 'throw';
   deadline: number;
@@ -132,7 +130,6 @@ const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
   'maxNodes',
   'maxDepth',
   'timeoutMs',
-  'strictCoercion',
   'types',
   'errorMode',
 ]);
@@ -264,7 +261,6 @@ function enforceLimits(root: Node, options: EvaluateOptions): void {
 
 function buildRuntime(options: EvaluateOptions): FeelEvalRuntime {
   const rt: FeelEvalRuntime = {
-    strict: options.strictCoercion === true,
     errorMode: options.errorMode === 'throw' ? 'throw' : 'null',
     deadline: options.timeoutMs === undefined ? 0 : Date.now() + options.timeoutMs,
     steps: 0,
@@ -356,10 +352,20 @@ const PARAM_ERROR_CODES = new Set<string>([
   FEEL_ERROR_CODES.EVAL_UNDEFINED,
 ]);
 
-/** 数字读取（`strictCoercion` 下拒绝字符串→数字） */
-function num(v: Value, rt: FeelEvalRuntime | undefined): number | null {
-  if (rt?.strict && typeof v === 'string') return null;
-  return toNumber(v);
+/**
+ * 算术操作数读取 —— **只收真数字，不做字符串→数字隐式转换**。
+ *
+ * ★ 规范算符表（DMN 1.5 §10.3.2.3）里 `+ - * / **` **不存在**「字符串 → 数字」这一档：
+ *   TCK 0100 用 14 条 `error_when_*` 逐算符钉死 —— `10 + "10"`、`10 - "10"`、
+ *   `10 * "10"`、`10 / "10"`、`10 ** "10"` 及其反向、以及双方都是串，**全部要求 null**。
+ *   只有 `+` 有字符串的那一档，且是 `string + string` → 拼接（见 `binary` 分支）。
+ *
+ * ⚠️ 曾在此处按 `strictCoercion` 选项宽容转换（`"1" + 1` = 2），与 TCK 直接冲突，已废。
+ *   隐式转换是 **DMN 的 typeRef 强制**（`floken-dmn` 的 `coerceTypeRef`）与
+ *   **内置函数实参**的事，不是算符的事 —— 两者不可混为一谈。
+ */
+function num(v: Value): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
 /** 是否是 FEEL duration（days and time / years and months 两类都算） */
@@ -547,8 +553,20 @@ function instanceOfSpec(
       }
       return true; // 允许多余键
     }
-    case 'range':
-      return isRange(v);
+    /**
+     * `range<X>`：**两个端点都**得是 X（TCK 1156 decision001_a~001_i）。
+     * 只判"是个区间"会让 `range("[@"P1Y"..@"P2Y"]") instance of range<date>` 也成立。
+     * `range<Any>` 不查端点（`Any` 恒真，走 `everyOf` 也无害，但短路更省）。
+     */
+    case 'range': {
+      if (!isRange(v)) return false;
+      const item = spec.item;
+      if (item.kind === 'named' && item.name.toLowerCase() === 'any') return true;
+      return everyOf([
+        instanceOfSpec(v.from, item, types, depth + 1),
+        instanceOfSpec(v.to, item, types, depth + 1),
+      ]);
+    }
     case 'function':
       return isFunction(v);
   }
@@ -586,7 +604,7 @@ export function evaluateNode(
        */
       const builtin = builtins[node.name];
       if (builtin) {
-        return makeFunction(node.name, (args, callCtx) => builtin(args, callCtx, runtime));
+        return makeFunction(node.name, (args, callCtx) => builtin(args, callCtx, runtime, undefined, builtins));
       }
       diag(warnings, FEEL_DIAGNOSTIC_CODES.EVAL_NO_VARIABLE, `Variable '${node.name}' not found`, node);
       return null;
@@ -651,7 +669,7 @@ export function evaluateNode(
       // 先在原上下文试算（静默）：能算出数字/列表即为「下标」语义
       const probe = evaluateNode(node.condition, ctx, [], builtins, runtime);
       if (typeof probe === 'number') return listAt(base, probe);
-      if (isList(probe)) return probe.map((x) => listAt(base, num(x, runtime)));
+      if (isList(probe)) return probe.map((x) => listAt(base, num(x)));
       // 否则按过滤：逐元素求值，元素绑定为 `item`，其属性亦可直接访问
       return base.filter(
         (el) => evaluateNode(node.condition, scopeFor(ctx, el), warnings, builtins, runtime) === true,
@@ -885,7 +903,7 @@ export function evaluateNode(
           throw functionNotAllowed(fnName, [...runtime.allowed]);
         }
 
-        result = fn(args, ctx, runtime, reordered?.used);
+        result = fn(args, ctx, runtime, reordered?.used, builtins);
       } catch (e) {
         if (e instanceof FeelError && PARAM_ERROR_CODES.has(e.code)) {
           // 严格口径：同一批错误码改为向外抛（对齐 TCK `errorResult="true"`）
@@ -913,7 +931,7 @@ export function evaluateNode(
         const impl = builtins[TEMPORAL_UNARY_MINUS];
         if (!impl) throw temporalNotLoaded(TEMPORAL_UNARY_MINUS);
         try {
-          return impl([v], ctx, runtime);
+          return impl([v], ctx, runtime, undefined, builtins);
         } catch (e) {
           /*
            * 与 `call` 节点**同一套**边界规则（AGENTS.md §5 / 规范 §10.3.2.13.1）：
@@ -929,7 +947,7 @@ export function evaluateNode(
           throw e;
         }
       }
-      const n = num(v, runtime);
+      const n = num(v);
       if (n === null) {
         diag(
           warnings,
@@ -953,12 +971,23 @@ export function evaluateNode(
       if (isTemporal(lv) || isTemporal(rv)) {
         const shifted = shiftTemporal(node.op, lv, rv);
         if (shifted !== undefined) return shifted;
-        // ★ 乘除：duration 与标量的缩放语义（`-@` 的同族委托键 `*@`）。
-        //   只有**有 duration 参与**才走这条；其余（`date * 2`）落回数字分支报类型不匹配。
-        if ((node.op === '*' || node.op === '/') && (isDuration(lv) || isDuration(rv))) {
+        /*
+         * ★ 乘除：duration 与标量的缩放语义（`-@` 的同族委托键 `*@`）。
+         *   只有**有 duration 参与**才走这条；其余（`date * 2`）落回数字分支报类型不匹配。
+         *
+         *   ⚠️ **`number / duration` 不在此列**（除法不可交换）：规范算符表只有
+         *   `duration / duration → number` 与 `duration / number → duration` 两档，
+         *   TCK 0100 的 `error_when_divide_lhs_number_by_rhs_dtDuration` /
+         *   `…_ymDuration` 两条要求 null。故 `/` 要求**左侧**是 duration。
+         */
+        const scaling =
+          node.op === '*'
+            ? isDuration(lv) || isDuration(rv)
+            : node.op === '/' && isDuration(lv);
+        if (scaling) {
           const impl = builtins[TEMPORAL_SCALE];
           if (!impl) throw temporalNotLoaded(TEMPORAL_SCALE);
-          return impl([lv, rv, node.op], ctx, runtime);
+          return impl([lv, rv, node.op], ctx, runtime, undefined, builtins);
         }
         /*
          * ★ 两个**非 duration** 时间值相减（`date - date`、`time - time`、
@@ -968,41 +997,27 @@ export function evaluateNode(
         if (node.op === '-' && !(isDuration(lv) || isDuration(rv))) {
           const impl = builtins[TEMPORAL_SUBTRACT];
           if (!impl) throw temporalNotLoaded(TEMPORAL_SUBTRACT);
-          const d = impl([lv, rv], ctx, runtime);
+          const d = impl([lv, rv], ctx, runtime, undefined, builtins);
           if (d !== null) return d;
         }
       }
       /*
-       * ★ **字符串加法**（DMN 1.5 §10.3.1.2 Addition）：`+` 是**唯一**对字符串有意义的算术运算符。
-       * 语义是拼接（算符表第二档）。
+       * ★ **字符串加法**（DMN 1.5 §10.3.2.3.1 Addition）：`+` 是**唯一**对字符串有意义的算术算符，
+       * 且只此一档 —— `string + string` → 拼接。
        *
-       * ⚠️ 本分支必须在 `num()` 之前：`num()` 会把数字串隐式转成 number，
-       *    于是 `"1" + "2"` 会算成 3 而不是 `"12"`。
+       * ⚠️ 本分支必须在 `num()` 之前，否则 `"1" + "2"` 会被算成 3 而不是 `"12"`。
+       *
+       * ⚠️ **没有混合档**：`10 + "10"` 在规范算符表里不存在，TCK 0100 的
+       *   `error_when_add_lhs_number_to_rhs_string` / `…_string_to_rhs_number` 两条要求 null。
+       *   字符串侧**不**先转数字（那是"吞类型错误返默认值"，AGENTS.md §5.6 四禁之一），
+       *   也不是反向把数字转成字符串去拼（`10 + "10"` 会变成 `"1010"`）。
+       *   落到下面 `num()` 分支 → 类型不匹配 → null + 诊断（严格口径抛）。
        */
-      if (node.op === '+' && (typeof lv === 'string' || typeof rv === 'string')) {
-        // ② 两侧都是 string → 拼接
-        if (typeof lv === 'string' && typeof rv === 'string') return lv + rv;
-        /*
-         * ③ 混合（string + 非 string）：规范算符表里没有这一档。
-         *    按 §10.3.2 隐式转换，**先把 string 侧往 number 转** —— 转成则按数字加法
-         *    （`"1" + 1` = 2，与 `strictCoercion` 的宽容默认一致）；转不成才是 null + 诊断。
-         *
-         *    ⚠️ 不能反向把 number 转成 string 去拼（`"1" + 1` 会变成 `"11"`，
-         *    那是"吞类型错误返默认值"，AGENTS.md §5.6 四禁之一）。
-         */
-        const a = num(lv, runtime);
-        const b = num(rv, runtime);
-        if (a !== null && b !== null) return a + b;
-        diag(
-          warnings,
-          FEEL_DIAGNOSTIC_CODES.EVAL_TYPE_MISMATCH,
-          `Operator '+' requires numbers or strings on both sides`,
-          node,
-        );
-        return null;
+      if (node.op === '+' && typeof lv === 'string' && typeof rv === 'string') {
+        return lv + rv;
       }
-      const l = num(lv, runtime);
-      const r = num(rv, runtime);
+      const l = num(lv);
+      const r = num(rv);
       /*
        * 幂 `**` 的非数字操作数 → 见上面的 `**` 分流（严格模式抛，默认 null + 诊断）。
        * `+ - * /` 与 null → 三值传播，两种模式都返回 null（TCK 期望 null，不是 error）。

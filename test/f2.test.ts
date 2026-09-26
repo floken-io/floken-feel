@@ -208,11 +208,19 @@ describe('floken-feel · F2 资源上限与选项契约', () => {
     );
   });
 
-  it('strictCoercion：默认宽容，开启后拒绝字符串→数字', () => {
-    expect(evaluate('"1" + 1').value).toBe(2);
-    const r = evaluate('"1" + 1', {}, { strictCoercion: true });
-    expect(r.value).toBe(null);
-    expect(r.warnings[0]?.code).toBe('FEEL_EVAL_TYPE_MISMATCH');
+  /*
+   * ★ 算符表里**没有**「字符串 → 数字」这一档，故算术操作数只收真数字（TCK 0100）。
+   *   曾有一个 `strictCoercion` 选项管"要不要宽容转换"，与 TCK 直接冲突，已废 ——
+   *   隐式转换是 DMN typeRef 强制（floken-dmn 的 coerceTypeRef）与内置函数实参的事，不是算符的事。
+   */
+  it('算术操作数不做字符串→数字隐式转换（TCK 0100 error_when_*）', () => {
+    for (const src of ['10 + "10"', '"10" + 10', '10 - "10"', '10 * "10"', '10 / "10"']) {
+      const r = evaluate(src);
+      expect(r.value, src).toBe(null);
+      expect(r.warnings[0]?.code, src).toBe('FEEL_EVAL_TYPE_MISMATCH');
+    }
+    // 唯一合法的"字符串参与算术"`string + string` 是拼接，不是相加
+    expect(evaluate('"1" + "1"').value).toBe('11');
   });
 });
 

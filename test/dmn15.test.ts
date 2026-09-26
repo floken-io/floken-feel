@@ -38,6 +38,11 @@ function nullWithDiag(src: string): void {
   expect(r.warnings.length, `default diagnostics of ${src}`).toBeGreaterThan(0);
 }
 
+/** 默认模式的诊断列表（判「给了 null 但**没有**诊断」这类"静默降级"） */
+function diags(src: string): unknown[] {
+  return evaluate(src).warnings;
+}
+
 function val(src: string): Value {
   return evaluate(src).value;
 }
@@ -145,20 +150,51 @@ describe('③ range() 区间构造', () => {
     expect(val('"d" in range("[\\"a\\"..\\"c\\"]")')).toBe(false);
   });
 
-  it('双参形态：闭区间 [from..to]', () => {
-    const r = val('range(1, 10)');
-    expect(isRange(r)).toBe(true);
-    expect(val('1 in range(1, 10)')).toBe(true);
-    expect(val('10 in range(1, 10)')).toBe(true);
-    expect(val('11 in range(1, 10)')).toBe(false);
+  it('端点开闭：起 `[`/`(`/`]`、止 `]`/`)`/`[`（规范三种各三个，不是各两个）', () => {
+    expect(val('range("]18..21]") = ]18..21]')).toBe(true);
+    expect(val('range("[18..21[") = [18..21[')).toBe(true);
+    expect(val('range("[18..21)") = [18..21)')).toBe(true);
+    // `]` 起、`[` 止都是**开**端点
+    expect(val('18 in range("]18..21[")')).toBe(false);
+    expect(val('21 in range("]18..21[")')).toBe(false);
   });
 
-  it('错误：串不是区间字面量 / 端点不是字面量 → ARG_TYPE', () => {
-    const cases = ['range("bad")', 'range("[a..c]")', 'range("18..21")'];
-    for (const src of cases) {
+  it('时间端点：`@"…"` 与字面量时间构造（TCK 1156 decision001/005/007~010）', () => {
+    expect(val('range("[@\\"1970-01-01\\"..@\\"1970-01-02\\"]") = [@"1970-01-01"..@"1970-01-02"]')).toBe(true);
+    expect(val('range("[@\\"P1D\\"..@\\"P2D\\"]") = [@"P1D"..@"P2D"]')).toBe(true);
+    expect(val('range("[date(\\"1970-01-01\\")..date(\\"1970-01-02\\")]") = [date("1970-01-01")..date("1970-01-02")]')).toBe(true);
+    // ★ 非字面量端点（`string(...)` 包裹）**不被允许** → null，不是"尽力算"
+    expect(val('range("[date(string(\\"1970-01-01\\"))..date(\\"1970-01-02\\")]")')).toBeNull();
+  });
+
+  it('`range` 只有一参（`from`）：`instance of range<X>` 要查端点类型', () => {
+    expect(val('range(from: "[1..3]") = [1..3]')).toBe(true);
+    expect(val('range("[@\\"P1Y\\"..@\\"P2Y\\"]") instance of range<years and months duration>')).toBe(true);
+    // 参数化类型必须真查端点：不然 `range<date>` 会被 `P1Y..P2Y` 误判为匹配
+    expect(val('range("[@\\"P1Y\\"..@\\"P2Y\\"]") instance of range<date>')).toBe(false);
+    expect(code('range(fron: "[1..3]")')).toBe(FEEL_ERROR_CODES.EVAL_NAMED_ARG);
+    // ★ 没有 `range(from, to)` 双参形态（那是 Camunda/Drools 扩展，非规范）
+    expect(code('range(1, 10)')).toBe(FEEL_ERROR_CODES.EVAL_ARG_COUNT);
+  });
+
+  it('无效区间串 → null（不是抛错）：跨类型 / 降序 / 无值端点', () => {
+    expect(val('range("[1..\\"b\\"]")')).toBeNull();
+    expect(val('range("[3..1]")')).toBeNull();
+    expect(val('range("[\\"z\\"..\\"a\\"]")')).toBeNull();
+    expect(val('range("[@\\"P2D\\"..@\\"P1D\\"]")')).toBeNull();
+    // date 与 date and time 不是同类 → null
+    expect(val('range("[@\\"1970-01-01\\"..@\\"1970-01-02T00:00:00\\"]")')).toBeNull();
+    expect(val('range("[null..null]")')).toBeNull();
+  });
+
+  it('错误：串不是区间字面量 → ARG_TYPE；端点不是字面量 → null（不抛）', () => {
+    for (const src of ['range("bad")', 'range("18..21")']) {
       nullWithDiag(src);
       expect(code(src)).toBe(FEEL_ERROR_CODES.EVAL_ARG_TYPE);
     }
+    // 端点不是字面量是"值无定义"，不是调用形式错 —— 只给 null，不带诊断
+    expect(val('range("[a..c]")')).toBeNull();
+    expect(diags('range("[a..c]")')).toHaveLength(0);
   });
 
   it('错误：单参非字符串 / arity 不符', () => {

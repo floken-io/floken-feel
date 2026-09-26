@@ -99,7 +99,6 @@ evaluate('now()', ctx, {
   clock: () => new Date('2026-03-01T09:30:00'), // ★ 注入时钟，钉死时态测试
   allowedFunctions: ['abs', 'count'],           // S-FEEL 白名单（越界抛错）
   maxNodes: 500, maxDepth: 32, timeoutMs: 200,  // 资源上限（超限抛错）
-  strictCoercion: true,                         // 拒绝字符串→数字隐式转换
   builtins: { double: (args) => /* … */ null }, // 覆盖/扩展内置表
 });
 ```
@@ -109,7 +108,7 @@ evaluate('now()', ctx, {
 | `clock` | `now()` / `today()` 的时间来源（`05-feel` §6.1：不注入则时态测试无法稳定） | — |
 | `allowedFunctions` | S-FEEL 子集白名单（`03-engine` §7.2：**越界必须报错，不能静默求值**） | 抛 `FEEL_NOT_ALLOWED_FUNCTION` |
 | `maxNodes` / `maxDepth` / `timeoutMs` | 防构造型输入与失控求值 | 抛 `FEEL_LIMIT_MAX_NODES` / `_MAX_DEPTH` / `_TIMEOUT` |
-| `strictCoercion` | `"1" + 1` 是否允许隐式转换 | 降级 `null` + 诊断 |
+| 算术操作数 | **只收真数字**：`10 + "10"` / `10 * "10"` … 是类型错误（规范算符表无"字符串→数字"一档，TCK 0100 的 14 条 `error_when_*` 钉死）。`+` 唯一合法的串用法是 `string + string` → 拼接；隐式转换属 **DMN typeRef 强制**（`floken-dmn` 的 `coerceTypeRef`） | 降级 `null` + 诊断 |
 | `builtins` | 覆盖/扩展内置函数表（`./temporal` 正是这样注入的） | — |
 | 未知选项 | — | 抛 `FEEL_OPTION_UNKNOWN`（**禁止静默忽略**） |
 
@@ -126,7 +125,7 @@ evaluate('now()', ctx, {
 | 时间函数 | 主入口内置 | 放在 `./temporal`（NFR-F12 隔离，**必需依赖 `temporal-polyfill`**）；**import 即注册** —— 未加载时调用抛「带可执行修复提示」的错误 |
 | 带空格内置名 | 上下文相关解析 | 标准名 **+ camelCase 别名** 双注册；名字合并规则与高亮共用 |
 | 自定义内置函数 | — | `registerBuiltin(name, fn)` |
-| 求值选项 | 无 | `clock` / `allowedFunctions` / `maxNodes` / `maxDepth` / `timeoutMs` / `strictCoercion` / **`errorMode`** |
+| 求值选项 | 无 | `clock` / `allowedFunctions` / `maxNodes` / `maxDepth` / `timeoutMs` / **`errorMode`** |
 | **严格口径求值**（错误改为抛） | 无 | **`evaluateStrict(src, ctx?, opts?)`**（= `errorMode:'throw'`） |
 
 ---

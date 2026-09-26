@@ -179,12 +179,18 @@ export interface EvalRuntime {
  *   `context put(context, key, value)`（`key` 是字符串）与
  *   `context put(context, keys, value)`（`keys` 是字符串列表），
  *   对位后两者形状一模一样，只有靠形参名才分得清（TCK 1146 nested007/nested008）。
+ * - 第五参 `builtins`：**当次求值所用的内置函数表**（求值器逐层透传）。
+ *   只有"一个内置函数要调另一个内置函数"才需要它 —— 目前唯一用户是 `range`：
+ *   区间字面量的**时间端点**（`@"1970-01-01"` / `date("…")`）只有 `./temporal` 造得出来，
+ *   而 `builtins/` 不得 import 域（包内分层 / NFR-F12），只能由求值器把表递进去。
+ *   缺省不传时该能力不可用（实现须**抛**而非静默 null，见 AGENTS.md §5 四禁）。
  */
 export type NativeFn = (
   args: Value[],
   ctx: FeelContext,
   runtime?: EvalRuntime,
   argNames?: readonly (string | null)[],
+  builtins?: Record<string, NativeFn>,
 ) => Value;
 
 // ---------- 类型守卫 ----------

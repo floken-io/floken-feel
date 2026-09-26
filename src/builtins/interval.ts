@@ -28,12 +28,18 @@ import {
   isList,
   isRange,
   makeRange,
+  type EvalRuntime,
+  type FeelContext,
   type FeelRange,
   type NativeFn,
   type Value,
 } from '../core/types.js';
-import { compareValues, feelTypeName } from '../core/values.js';
-import { argTypeError } from '../core/errors.js';
+import {
+  compareValues,
+  feelTypeName,
+  sameTypeFamily,
+} from '../core/values.js';
+import { argTypeError, temporalNotLoaded } from '../core/errors.js';
 import { requireArity } from './helpers.js';
 
 /** 端点在数轴上的位置：`值 + k·ε`（`k` 表达开闭，见文件头） */
@@ -88,73 +94,171 @@ function intervals(fnName: string, args: readonly Value[]): [FeelRange, FeelRang
   return [a, b];
 }
 
-/** 区间字面量串：`[18..21)` / `(1..10]` / `"a".."z"` 端点形态 */
-const RANGE_TEXT = /^([[(])\s*(.+?)\s*\.\.\s*(.+?)\s*([\])])$/;
+/**
+ * 区间字面量串。
+ *
+ * ★ 起止括号各有 **三个** 合法字符，不是两个：
+ *   起 `[`（闭）| `(`（开）| `]`（开）；止 `]`（闭）| `)`（开）| `[`（开）。
+ *   规范语法即 `('[' | '(' | ']') … (']' | ')' | '[')`。只认 `[`/`(` 起、`]`/`)` 止，
+ *   会把 `]18..21]` 与 `[18..21[`（TCK 1156 decision003_c / decision003_e）误判成"不是区间字面量"。
+ */
+const RANGE_TEXT = /^([[(\]])\s*(.+?)\s*\.\.\s*(.+?)\s*([\])[])$/;
 
 /** 科学计数法也要认（`2.3e-5` 是 DMN 1.5 起允许的数字字面量） */
 const NUMBER_TEXT = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/;
 
 /**
- * 区间字面量的端点：数字（含科学计数法）或引号字符串。
- * 其它形态（未加引号的裸名、时间字面量）—— 解析不了就返回 `null`，由调用方抛类型错误。
+ * 端点里允许出现的**字面量时间构造**（DMN 1.5 §10.3.4 转换函数）。
  *
- * ⚠️ 时间端点（`range("[2020-01-01..2020-12-31)")`）目前**不支持**：端点解析要走
- * `./temporal` 的构造实现，而 `builtins/` 不得 import 域（包内分层），故留待后续按
- * 延迟能力接入。**不静默返回 null** —— 解析不了即抛，避免出现"看着像区间其实是空"的结果。
+ * 只此 7 个，且**实参必须是字面量串** —— TCK 1156 decision007_b/c 起共 8 条钉死：
+ * `date(string("1970-01-01"))` / `date(input_001)` 这种"非字面量"端点**不被允许**，
+ * 整条 `range()` 给 `null`，而不是"尽力算出一个值"。
  */
-function endpointOf(text: string): Value | null {
-  const t = text.trim();
-  if (t === '') return null;
-  if (NUMBER_TEXT.test(t)) return Number(t);
-  const quote = t[0];
-  if (t.length >= 2 && (quote === '"' || quote === "'") && t[t.length - 1] === quote) {
-    return t.slice(1, -1);
+const TEMPORAL_LITERAL_FNS: ReadonlySet<string> = new Set([
+  'date',
+  'date and time',
+  'dateTime',
+  'time',
+  'duration',
+  'years and months duration',
+  'days and time duration',
+]);
+
+/** `name("…")` —— 名字可含空格（`date and time`），故空格要能在名字里 */
+const CALL_HEAD = /^([A-Za-z][A-Za-z0-9 ]*?)\s*\(([\s\S]*)\)$/;
+
+/**
+ * 读一个引号字符串（`"` 或 `'` 定界，`\` 转义）。
+ * 返回内容与**结束下标**；调用方据此判断后面是否还有多余字符（`date("a", 1)` 就不该算字面量）。
+ */
+function readQuoted(text: string, i: number): { value: string; end: number } | null {
+  const quote = text[i];
+  if (quote !== '"' && quote !== "'") return null;
+  let out = '';
+  let j = i + 1;
+  while (j < text.length) {
+    const c = text[j] as string;
+    if (c === '\\') {
+      out += text[j + 1] ?? '';
+      j += 2;
+      continue;
+    }
+    if (c === quote) return { value: out, end: j + 1 };
+    out += c;
+    j += 1;
   }
   return null;
 }
 
-function isPointLike(v: Value): boolean {
-  return !(v === null || isList(v) || isContext(v) || isFunction(v));
+/** 端点解析结果：`ok` = 拿到了值；`null` = 不是字面量（整条 `range()` 随之给 null） */
+type Endpoint = { ok: true; value: Value } | { ok: false };
+
+/** 多空格归一（`date  and   time` → `date and time`） */
+function squeeze(name: string): string {
+  return name.trim().replace(/\s+/g, ' ');
 }
+
+/**
+ * 调**时间档**的字面量构造。时间档未加载 → **抛** `FEEL_NOT_LOADED_TEMPORAL`
+ * （与 `@"…"` 在求值器里的规矩一致，AC-F7；不静默 null —— AGENTS.md §5 四禁之一）。
+ */
+function temporalLiteral(
+  name: string,
+  arg: string,
+  ctx: FeelContext,
+  runtime: EvalRuntime | undefined,
+  builtins: Record<string, NativeFn> | undefined,
+): Endpoint {
+  const impl = builtins?.[name];
+  if (!impl) throw temporalNotLoaded(name);
+  const v = impl([arg], ctx, runtime);
+  // 串不是合法时间文本 → 端点无值 → 整条 range() 给 null（不是类型错误）
+  return v === null || v === undefined ? { ok: false } : { ok: true, value: v };
+}
+
+/**
+ * 区间字面量串的**端点** → 值。
+ *
+ * 接受的形态（就这四类，其余一律"不是字面量"）：
+ *   数字（含科学计数法）· 引号字符串 · `@"…"` 时间字面量 · `date("…")` 等字面量时间构造
+ *
+ * ⚠️ **故意不认** `null` / `true` / 变量名 / 嵌套调用：
+ * `range("[null..null]")`（TCK 1156 decision027）与
+ * `range("[date(string("…"))..@"…"]")`（decision007_b）都必须给 `null`。
+ */
+function endpointValue(
+  text: string,
+  ctx: FeelContext,
+  runtime: EvalRuntime | undefined,
+  builtins: Record<string, NativeFn> | undefined,
+): Endpoint {
+  const t = text.trim();
+  if (t === '') return { ok: false };
+  if (NUMBER_TEXT.test(t)) return { ok: true, value: Number(t) };
+
+  // `@"…"` —— 时间字面量（语法在 core，构造在 ./temporal）
+  if (t[0] === '@') {
+    const q = readQuoted(t, 1);
+    if (!q || q.end !== t.length) return { ok: false };
+    return temporalLiteral('@', q.value, ctx, runtime, builtins);
+  }
+
+  // 引号字符串
+  if (t[0] === '"' || t[0] === "'") {
+    const q = readQuoted(t, 0);
+    if (!q || q.end !== t.length) return { ok: false };
+    return { ok: true, value: q.value };
+  }
+
+  // `name("…")` —— 只放行字面量时间构造，且实参必须恰好一个字面量串
+  const m = CALL_HEAD.exec(t);
+  if (m) {
+    const name = squeeze(m[1] ?? '');
+    if (!TEMPORAL_LITERAL_FNS.has(name)) return { ok: false };
+    const inner = (m[2] ?? '').trim();
+    const q = readQuoted(inner, 0);
+    if (!q || q.end !== inner.length) return { ok: false };
+    return temporalLiteral(name, q.value, ctx, runtime, builtins);
+  }
+
+  return { ok: false };
+}
+
 
 export const INTERVAL_BUILTINS: Record<string, NativeFn> = {
   /**
    * ★ `range` —— 区间**构造**（与上面 14 个关系函数不同：那组是判定，这个是造值）。
    *
-   * 两种形态：
-   * - `range("[18..21)")` —— **DMN 1.5 增强形态**：由区间字面量串构造，开闭按括号
-   *   （`[` / `]` 闭，`(` / `)` 开）。规范示例即 `range("[18..21)")`。
-   * - `range(from, to)` —— 双参闭区间 `[from..to]`（含两端）。
+   * **只有一参**：`range(from: string)`（DMN 1.5 §10.3.4 转换函数，形参名逐字为 `from`）。
+   * 实参不是串、或串不是区间字面量 → **抛** `FEEL_EVAL_ARG_TYPE`；
+   * 串是区间字面量但**端点不是字面量 / 两端不同类 / 降序** → 给 `null`（不是错误）。
    *
-   * 端点形态：数字（含科学计数法）与引号字符串。其余 → 抛 `FEEL_EVAL_ARG_TYPE`（不静默 null）。
+   * 三类 `null` 各有出处（TCK 1156 逐条钉死）：
+   * - 端点非字面量：`range("[date(string("…"))..@"…"]")` → null（decision007_b）
+   * - 两端不同类：`range("[1..\"b\"]")`（decision018）、`date` 对 `date and time`（decision019_a）
+   * - 降序：`[3..1]`（decision020）、`["z".."a"]`（decision023）、`[@"P2D"..@"P1D"]`（decision024）
+   *
+   * ⚠️ **没有 `range(from, to)` 双参形态**：TCK decision013_a 明确 `range("[1..3]", "foo")`
+   * 是"实参过多 → null"。双参是 Camunda/Drools 的扩展，不是规范。
    */
-  range: (args) => {
-    if (args.length === 1) {
-      const text = args[0] ?? null;
-      if (typeof text !== 'string') {
-        throw argTypeError('range', 'text', 'string', feelTypeName(text));
-      }
-      const m = RANGE_TEXT.exec(text.trim());
-      if (!m) throw argTypeError('range', 'text', 'range literal, e.g. "[18..21)"', text);
-      const [, open = '[', fromText = '', toText = '', close = ']'] = m;
-      const from = endpointOf(fromText);
-      const to = endpointOf(toText);
-      if (from === null || to === null) {
-        throw argTypeError(
-          'range',
-          'text',
-          'range literal with number or string endpoints',
-          text,
-        );
-      }
-      return makeRange(from, to, open === '[', close === ']');
+  range: (args, ctx, runtime, _argNames, builtins) => {
+    requireArity(args, 'range', 1);
+    const text = args[0] ?? null;
+    if (typeof text !== 'string') {
+      throw argTypeError('range', 'from', 'string', feelTypeName(text));
     }
-    requireArity(args, 'range', 2);
-    const from = args[0] ?? null;
-    const to = args[1] ?? null;
-    if (!isPointLike(from)) throw argTypeError('range', 'from', 'point', feelTypeName(from));
-    if (!isPointLike(to)) throw argTypeError('range', 'to', 'point', feelTypeName(to));
-    return makeRange(from, to, true, true);
+    const m = RANGE_TEXT.exec(text.trim());
+    if (!m) throw argTypeError('range', 'from', 'range literal, e.g. "[18..21]"', text);
+    const [, open = '[', fromText = '', toText = '', close = ']'] = m;
+    const from = endpointValue(fromText, ctx, runtime, builtins);
+    const to = endpointValue(toText, ctx, runtime, builtins);
+    if (!from.ok || !to.ok) return null;
+    // 两端必须同类；跨类型无定义 → null（不是"尽力比一下"）
+    if (!sameTypeFamily(from.value, to.value)) return null;
+    // 降序区间无定义 → null（`c === null` 是不可比，同样无定义）
+    const c = compareValues(from.value, to.value);
+    if (c === null || c > 0) return null;
+    return makeRange(from.value, to.value, open === '[', close === ']');
   },
 
   /** `a` 整体在 `b` 之前 */

@@ -402,6 +402,18 @@ function shiftByDuration(base: FeelTemporal, dur: FeelTemporal, sign: 1 | -1): V
     return combineDurations(base, dur, sign);
   }
   /*
+   * ★ **年月时长不能加/减到 `time` 上**（规范算符表无此档）：
+   * `time ± years and months duration` 要求 null（TCK 0100 的
+   * `error_when_add_lhs_time_to_rhs_ymDuration` / `…_ymDuration_to_rhs_time` /
+   * `error_when_subtract_lhs_time_minus_rhs_ymDuration` 三条）。
+   * 年月只作用于有"年月日"的量纲（`date` / `date and time`）；`time` 没有月份可进位。
+   * 不在这里收口的话，polyfill 会**静默忽略** months/years 分量、原样返回 `10:10:10`，
+   * 那是"吞类型错误返默认值"（AGENTS.md §5.6 四禁之一）。
+   */
+  if (base.kind === 'time' && durationKindOf(dur) === 'years and months duration') {
+    return null;
+  }
+  /*
    * ★ `date ± 日时类时长`（DMN 1.5 §10.3.1.3）：`date` 要先**升成当日 `00:00:00`** 再算，
    * 算完取回 `date` 部分。
    * 直接对 `PlainDate` 调 `subtract("PT1H")` 会抛（日时单位对纯日期无意义），
@@ -2075,11 +2087,21 @@ export function subtractTemporals(a: unknown, b: unknown): FeelTemporal | null {
   const T = getTemporal();
   if (!T) return null;
 
-  // `date` 升维成 `date and time`：锚点取另一侧有没有 —— 另一侧无锚点就也别加
-  const anchored = hasAnchor(x) || hasAnchor(y);
+  /*
+   * ★ `date` 升维成 `date and time` 时**恒按 UTC**（`T00:00:00Z`），不看另一侧有没有锚点。
+   *
+   * 规范口径是「**date implies UTC**」（TCK 0100 的多条 description 明写）：
+   *   `@"2021-01-02T00:00:00Z" - @"2021-01-02"`                    → `P0D`（有值）
+   *   `@"2021-01-01T00:00:00"  - @"2021-01-02"`（dateTime **无**时区）→ **null**
+   *   `@"2021-01-02T10:10:10@Europe/Paris" - @"2021-01-01"`         → `P1DT9H10M10S`
+   * 所以 date 一侧**总是**带锚点；于是「另一侧无时区」会撞上锚点不一致 → null。
+   *
+   * ⚠️ 曾按 `hasAnchor(x) || hasAnchor(y)` 决定要不要补 `Z`，结果 `_001` 那条
+   * （dateTime 无时区）被算成了 `-P1D` —— 把"无定义"算成了"有答案"。
+   */
   const lift = (v: FeelTemporal): FeelTemporal | null => {
     if (v.kind !== 'date') return v;
-    return asFeelTemporal(temporalFromText('dateTime', `${v.iso}T00:00:00${anchored ? 'Z' : ''}`));
+    return asFeelTemporal(temporalFromText('dateTime', `${v.iso}T00:00:00Z`));
   };
   const lx = lift(x);
   const ly = lift(y);
