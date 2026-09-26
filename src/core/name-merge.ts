@@ -35,6 +35,31 @@ function isPlainName(t: Token | undefined): boolean {
   return !!t && t.type === 'name' && t.value !== '?' && t.value !== '';
 }
 
+/**
+ * 允许出现在名字**中间**的关键字（DMN 1.5 §10.3.1.1：多数关键字可作名字的中间字符）。
+ *
+ * ★ 为什么不吸收 `and` `or` `in` `instance` `then` `else` `return` `satisfies` `between`：
+ *   它们是**连接符**，两边本来就能接表达式 —— `a and b`、`a instance of number`、
+ *   `if a then b else c`、`for i in x return y`、`some i in x satisfies p`。
+ *   吸收它们会把这些合法表达式整段并成一个名字。
+ *   反过来，表里这几个关键字**夹在两个名字之间**时原本就是语法错（`a of b` 没有意义），
+ *   吸收只是把"必然报错"变成"按名字解析"（TCK 0020 的 `Years of Service`）。
+ */
+const NAME_INNER_KEYWORDS: ReadonlySet<string> = new Set([
+  'of',
+  'not',
+  'if',
+  'for',
+  'every',
+  'some',
+  'function',
+]);
+
+/** 名字尾部可吸收的数字（`decision A 2.1` / `Extra days case 1`，见文件头 ★） */
+function isTrailingNum(t: Token | undefined): boolean {
+  return t?.type === 'num';
+}
+
 function textOf(tokens: Token[], from: number, to: number): string {
   let text = '';
   for (let k = from; k <= to; k += 1) {
@@ -90,9 +115,20 @@ export function mergeNames(
     // 规则 2：通用名字合并（相邻 `name` token，并吸收紧随其后的数字）
     if (isPlainName(t)) {
       let j = i;
-      while (isPlainName(tokens[j + 1])) j += 1;
-      // ★ 数字吸收：见文件头 ★（`decision A 2.1`）
-      while (tokens[j + 1]?.type === 'num') j += 1;
+      const eatNames = () => {
+        while (isPlainName(tokens[j + 1])) j += 1;
+        while (isTrailingNum(tokens[j + 1])) j += 1;
+      };
+      eatNames();
+      // 名字中间的关键字：`Years of Service`
+      while (
+        tokens[j + 1]?.type === 'kw' &&
+        NAME_INNER_KEYWORDS.has(tokens[j + 1]?.value ?? '') &&
+        (isPlainName(tokens[j + 2]) || isTrailingNum(tokens[j + 2]))
+      ) {
+        j += 1;
+        eatNames();
+      }
       if (j > i) {
         const last = tokens[j];
         out.push({
