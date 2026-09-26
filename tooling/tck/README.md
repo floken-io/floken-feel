@@ -177,8 +177,38 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
 
 **已知 gap（6 条，不打算修）**：`1115#015/#016/#029/#030`、`1117#027/#028` 用 9 位年份
 （`999999999`）—— 写法合法但超出 `temporal-polyfill` 可表示范围（±275760），记 `known-gaps`：
-给 `null`，不抛错。另有 4 条 **TCK 自身矛盾**（`1111#K2-1`、`0092#009`、`0057#009/#010`）
-→ 从规范，不强行适配。
+给 `null`，不抛错。另有 2 条 **TCK 自身矛盾**（`1111#K2-1`、`0092#009`）→ 从规范，不强行适配。
+
+- **第七轮（★ 错误双模式：规范 `null` 与 TCK `throw` 不再二选一，严格 1519 → 1988）**：
+  上一轮把参数/类型类错误钉成返回 `null`（规范），代价是严格口径掉到 1519（76.0%）、
+  471 条 `errorResult` 用例成缺口。用户要「严格百分百」，又不想放弃规范语义 ——
+  结论是**加一个开关，把选择权交给调用方**，而不是在两种口径里挑一个：
+
+  ```
+  evaluate(src)        // errorMode:'null'  —— 默认，规范语义：null + 诊断
+  evaluateStrict(src)  // errorMode:'throw' —— TCK 严格口径：抛 FeelError
+  ```
+
+  先做实证分类（脚本 `tmp/classify.mjs`）把 531 条 `errorResult` 用例按当前行为分成
+  **A 已抛 22 / B null+诊断 451 / C 静默 null 48 / D 返回非 null 10（全在已 IGNORED 的 0082）**。
+  关键在 **C 类**：它们是函数内部**静默 `return null`**（无诊断、严格模式也救不了），
+  故本轮把 `duration` / `years and months duration` / `get value` / `not` / `split` /
+  `matches` / `contains` 全部改成**抛**，由 `call` 边界按模式统一处置 ——
+  **一条代码路径同时供两种口径**（默认模式值仍是 `null`，只多了诊断，故宽松口径不动）。
+  不经 `call` 边界的节点（运算符、上下文字面量重复键、调用非函数值）走 `semanticFail`，行为同构。
+
+  逐条清尾（13 → 0）：
+  ① `0075` `**` 非数字（10 条）：只给 `**` 分流 —— `+ - * /` 遇 null 是三值传播
+     （TCK 期望 `null`，不是 error），**不能一刀切**。
+  ② `0092#016` `bkm_016_1(sqrt)`（1 条）：跑分器在 **BKM 体内部**用默认 `opts`，
+     体内错误被转成 null。BKM 体是**被测逻辑本身**，严格模式下必须继承 `errorMode`。
+  ③ `0057#009/#010` `{a:1}.b` / `null.b`（2 条）：TCK 自身矛盾 → 按 `label#id` 登记 IGNORED，从规范。
+
+  实测：默认口径宽松 **1988/1996（99.6%）**；`--strict` 严格口径 **1988/1996（99.6%）、缺口 0**。
+  两套口径各存一份基线（`baseline.labels.json` / `baseline.labels.strict.json`），都零退化。
+  `vitest` **209 passed**（194 → 209，新增 `test/strict.test.ts` 15 条）。
+  恢复错误码 `FEEL_EVAL_NOT_CALLABLE`（严格模式下"调用非函数值"要抛；默认模式仍走
+  诊断码 `FEEL_EVAL_NO_FUNCTION` —— **两个命名空间，不重叠**）。
 
 **已知最大缺口（下一轮按此顺序）**：见 `05-包需求-floken-feel.md` §7.4 的清单。
 
@@ -187,6 +217,17 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
 `baseline.labels.json` 记录**每个 label 的 pass 数**。
 它的用途是**防退化**：任何一次改动后重跑，`run.mjs` 会自动逐 label 比对，
 出现 `X → 更小` 就报「判据① 标签退化」。
+
+★ **两套口径各一份基线**（2026-09-26 第七轮）：
+
+| 跑法 | 基线文件 |
+|---|---|
+| `node tooling/tck/run.mjs`（默认 / 规范语义） | `baseline.labels.json` |
+| `node tooling/tck/run.mjs --strict`（TCK 严格口径） | `baseline.labels.strict.json` |
+
+分开存的原因：改严格模式的行为（如"静默 null → 抛"）会动到严格口径的分数，
+若只比对默认口径就看不出严格侧退化；反之亦然。写基线：加 `--write-baseline`
+（与 `--strict` 组合即写严格侧那一份）。
 
 > 为什么不叫「上游基线」：本项目**从一开始就是自研 parser**（零 `lezer-feel` 依赖，用户已拍板），
 > 因此不存在"换 parser 前后对比"的参照物 —— 判据① 的原始意图（证明分数不是 fork 来的）

@@ -240,25 +240,22 @@ function compileRegex(fnName: string, pattern: string, flags: string, global: bo
 }
 
 /**
- * 取字符串实参：实参为 `null` 或**非字符串**（如列表/数字）一律返回 `null`
- * （unknown，对齐 DMN 1.4 §10.3.2.13.1 + feelin）。
+ * 取字符串实参：实参为 `null` 或**非字符串**（如列表/数字）一律**抛** `FEEL_EVAL_ARG_TYPE`
+ * （默认模式由 `call` 边界转成 `null` + 诊断；`errorMode:'throw'` 下向外抛 ——
+ * TCK 1110/1111/0067 把这些写法标了 `errorResult`）。
  *
- * 调用方据此返回 null，由 `call` 节点边界转换为「诊断 + null」，与 feelin 一致；
- * 不在此抛错（参考 r6 的"抛错"立场已被用户拍板「必须对齐规范」回退）。
+ * ⚠️ 口径统一的好处：默认模式的**值**仍是 `null`（与之前静默返回一致），
+ * 只是多了诊断；严格模式则能拿到错误 —— 一条代码路径同时满足两种口径。
  *
- * 可选 `flags` 形参的「null / 省略 → 无标志、非字符串 → 类型错返回 null」由
+ * 可选 `flags` 形参的「null / 省略 → 无标志、非字符串 → 类型错」由
  * `matches` / `replace` 在调用点就地处理（不能简单 `?? ''`，否则列表型 flags
  * 会被误当"无标志"，见 TCK 1111 `K-MatchesFunc-3`）。
  */
-function reqString(
-  args: readonly Value[],
-  i: number,
-  fnName: string,
-  param: string,
-): string | null {
+function reqString(args: readonly Value[], i: number, fnName: string, param: string): string {
   const v = args[i] ?? null;
-  if (v === null) return null;
-  if (typeof v !== 'string') return null;
+  if (v === null || typeof v !== 'string') {
+    throw argTypeError(fnName, param, 'string', feelTypeName(v));
+  }
   return v;
 }
 
@@ -273,9 +270,8 @@ function translateReplacement(rep: string): string {
 export const STRING_BUILTINS: Record<string, NativeFn> = {
   // ----- 判定 -----
   /*
-   * `contains(string, match)`：两个实参都必须是字符串；`null` / 非字符串一律**返回 null**
-   * （unknown，对齐 §10.3.2.13.1）。TCK 1110#001~#003 把 `contains(null,...)` 列成 errorResult
-   * （期望抛错）—— 规范/feelin 口径是 null。
+   * `contains(string, match)`：两个实参都必须是字符串；`null` / 非字符串 → **抛**
+   * （默认模式 `call` 边界转成 `null` + 诊断，严格模式向外抛 —— TCK 1110#001~#003 标 errorResult）。
    *
    * ⚠️ `starts with` / `ends with` 仍按 toStr+null 处理：TCK 对它们没有这类 errorResult 用例。
    */
@@ -283,7 +279,6 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
     requireArity(a, 'contains', 2);
     const s = reqString(a, 0, 'contains', 'string');
     const m = reqString(a, 1, 'contains', 'match');
-    if (s === null || m === null) return null;
     return s.includes(m);
   },
   'starts with': (a) => {
@@ -351,12 +346,11 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
     const s = reqString(a, 0, 'replace', 'input');
     const pattern = reqString(a, 1, 'replace', 'pattern');
     const rep = reqString(a, 2, 'replace', 'replacement');
-    if (s === null || pattern === null || rep === null) return null;
-    // flags 是可选形参：省略 / 显式 null 都按"无标志"；非字符串实参（如列表）→ 类型错 → null
+    // flags 是可选形参：省略 / 显式 null 都按"无标志"；非字符串实参（如列表）→ 类型错 → 抛
     const flagsArg = a.length > 3 ? a[3] : undefined;
     let flags = '';
     if (flagsArg !== undefined && flagsArg !== null) {
-      if (typeof flagsArg !== 'string') return null;
+      if (typeof flagsArg !== 'string') throw argTypeError('replace', 'flags', 'string', feelTypeName(flagsArg));
       flags = flagsArg;
     }
     return s.replace(compileRegex('replace', pattern, flags, true), translateReplacement(rep));
@@ -365,12 +359,11 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
     requireArity(a, 'matches', 2, 3);
     const s = reqString(a, 0, 'matches', 'input');
     const pattern = reqString(a, 1, 'matches', 'pattern');
-    if (s === null || pattern === null) return null;
-    // flags 是可选形参：省略 / 显式 null 都按"无标志"；非字符串实参（如列表）→ 类型错 → null
+    // flags 是可选形参：省略 / 显式 null 都按"无标志"；非字符串实参（如列表）→ 类型错 → 抛
     const flagsArg = a.length > 2 ? a[2] : undefined;
     let flags = '';
     if (flagsArg !== undefined && flagsArg !== null) {
-      if (typeof flagsArg !== 'string') return null;
+      if (typeof flagsArg !== 'string') throw argTypeError('matches', 'flags', 'string', feelTypeName(flagsArg));
       flags = flagsArg;
     }
     return compileRegex('matches', pattern, flags, false).test(s);
@@ -379,7 +372,6 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
     requireArity(a, 'split', 2);
     const s = reqString(a, 0, 'split', 'string');
     const delim = reqString(a, 1, 'split', 'separator');
-    if (s === null || delim === null) return null;
     return s.split(compileRegex('split', delim, '', false));
   },
 

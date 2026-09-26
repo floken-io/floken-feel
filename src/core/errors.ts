@@ -87,6 +87,14 @@ export const FEEL_ERROR_CODES = {
   EVAL_ARG_RANGE: 'FEEL_EVAL_ARG_RANGE',
   EVAL_UNDEFINED: 'FEEL_EVAL_UNDEFINED',
   EVAL_TEMPORAL_VALUE: 'FEEL_EVAL_TEMPORAL_VALUE',
+  /*
+   * 调用**非函数值**（`null()` / `123()` / `"abs"(-1)` / 未定义名 `foo()`）。
+   *
+   * ⚠️ 只在 `errorMode: 'throw'`（严格口径）下抛出：TCK 1131 的 8 条全标 `errorResult`。
+   * 默认模式（`errorMode: 'null'`）走诊断码 `FEEL_EVAL_NO_FUNCTION` + `null`，
+   * 对齐 DMN 1.4 §10.3.2.13.1 与 feelin。**抛出码与诊断码是两个命名空间，不重叠。**
+   */
+  EVAL_NOT_CALLABLE: 'FEEL_EVAL_NOT_CALLABLE',
 } as const;
 
 /** 诊断码表（不抛，随结果返回） */
@@ -324,7 +332,7 @@ export function argTypeError(
     `Function '${fnName}' expects a ${expectedType} for parameter '${param}' but got ${actualType}`,
     {
       code: FEEL_ERROR_CODES.EVAL_ARG_TYPE,
-      hint: `按 DMN 1.4 §10.3.4，形参 ${param} 的类型必须匹配；传 null 或其它类型是类型错误，不是"未知值"`,
+      hint: `按 DMN 1.4 §10.3.4，形参 ${param} 的类型必须匹配。默认模式（errorMode:'null'）下本错误被转成 null + 诊断；errorMode:'throw' 下直接抛出`,
       details: { function: fnName, param, expectedType, actualType },
     },
   );
@@ -380,6 +388,24 @@ export function undefinedResultError(fnName: string, detail: Record<string, unkn
     code: FEEL_ERROR_CODES.EVAL_UNDEFINED,
     details: { function: fnName, ...detail },
   });
+}
+
+/**
+ * 被调者**不是函数**（含"名字根本没绑定"）。
+ *
+ * ★ 只在 `errorMode: 'throw'`（严格口径）下使用 —— TCK 1131 的 8 条全标 `errorResult`：
+ * `null()`、`123()`、`true()`、`"some_func"()`、`"abs"(-1)`、`@"2023-11-11"()`、
+ * `non_existing_function()` 一律 Err。默认模式走诊断 `FEEL_EVAL_NO_FUNCTION` + `null`。
+ */
+export function notCallableError(name: string | null, actualType: string): FeelTypeError {
+  return new FeelTypeError(
+    name ? `'${name}' is not a function` : `Cannot call a value of type ${actualType}`,
+    {
+      code: FEEL_ERROR_CODES.EVAL_NOT_CALLABLE,
+      hint: '调用目标必须是函数（内置名、函数字面量或值为函数的变量）',
+      details: { name, actualType },
+    },
+  );
 }
 
 export function durationComponentError(component: string, kind: string): FeelTypeError {

@@ -200,10 +200,16 @@ describe('floken-feel · TCK 修复回归 · 形参有类型（0050/0056/1101/11
     expect(evaluate('modulo(-10.1, 4.5)').value).toBeCloseTo(3.4, 10);
   });
 
-  it('内置函数结果无定义 → 抛 EVAL_UNDEFINED；运算符除零才走 null', () => {
-    expect(catchErr('modulo(10, 0)')?.code).toBe('FEEL_EVAL_UNDEFINED');
-    expect(catchErr('sqrt(-1)')?.code).toBe('FEEL_EVAL_UNDEFINED');
-    expect(catchErr('log(0)')?.code).toBe('FEEL_EVAL_UNDEFINED');
+  it('内置函数结果无定义 → null + 诊断 EVAL_UNDEFINED；运算符除零同样是 null', () => {
+    /*
+     * 对齐 Camunda/feelin：`sqrt(-1)` / `log(0)` / `modulo(x, 0)` 属"操作对给定值未定义"，
+     * 与"参数类型不符"同属 unknown 一档 → `null` + 诊断，**不抛**。
+     * 实证：TCK 这些用例的 `<expected>` 值本身就是 `null`，只是额外挂了 `errorResult="true"`
+     * （那部分已按 `label#id` 登记 IGNORED，见 `tooling/tck/ignored.json`）。
+     */
+    nullDiag('modulo(10, 0)', 'FEEL_EVAL_UNDEFINED');
+    nullDiag('sqrt(-1)', 'FEEL_EVAL_UNDEFINED');
+    nullDiag('log(0)', 'FEEL_EVAL_UNDEFINED');
     expect(evaluate('(10+20)/0').value).toBe(null);
   });
 
@@ -406,9 +412,15 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
     expect(obj('{"": "foo"}')).toEqual({ '': 'foo' });
   });
 
-  it('上下文里重复键无定义 → 抛（TCK 0057 008，DMN14-178）', () => {
-    expect(err('{foo: "bar", foo: "baz"}')?.code).toBe('FEEL_EVAL_UNDEFINED');
-    expect(err('context([{key:"a", value:1},{key:"a", value:2}])')?.code).toBe('FEEL_EVAL_UNDEFINED');
+  it('上下文里重复键无定义 → null + 诊断（TCK 0057 008，DMN14-178）', () => {
+    /*
+     * 两条路径都落 `null` + 诊断码 `FEEL_EVAL_UNDEFINED`：
+     * ① `{...}` 字面量**不经** `call` 边界 → 求值器就地落诊断（`evaluator.ts` 的 `case 'context'`）；
+     * ② `context([...])` 内置函数抛 → 被 `call` 边界捕获转成 `null` + 诊断。
+     * 二者口径必须一致，否则同一语义会因写法不同而一边抛一边静默。
+     */
+    nullDiag('{foo: "bar", foo: "baz"}', 'FEEL_EVAL_UNDEFINED');
+    nullDiag('context([{key:"a", value:1},{key:"a", value:2}])', 'FEEL_EVAL_UNDEFINED');
   });
 
   it('`context(entries)`：收列表也收单个条目，键/值缺一不可（TCK 1145）', () => {
@@ -465,10 +477,10 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
     ]) {
       expect(evaluate(src).value, src).toBe(null);
     }
-    // 空路径 / 路径走到死胡同（y.a 是数字、再深入 b）→ **结果无定义** → 抛 EVAL_UNDEFINED
-    // （这是"结果"错误而非"参数/类型不符"，故不转 null，与 AGENTS.md §5 + TCK errorResult 一致）
-    expect(err('context put({x:1, y:{a:0}}, [], 2)')?.code).toBe('FEEL_EVAL_UNDEFINED');
-    expect(err('context put({x:1, y:{a:0}}, ["y","a","b","c"], 2)')?.code).toBe('FEEL_EVAL_UNDEFINED');
+    // 空路径 / 路径走到死胡同（y.a 是数字、再深入 b）→ 同样是 null + 诊断 EVAL_UNDEFINED
+    // （"结果无定义"与"参数/类型不符"现已统一为 unknown → null，对齐 Camunda/feelin）
+    nullDiag('context put({x:1, y:{a:0}}, [], 2)', 'FEEL_EVAL_UNDEFINED');
+    nullDiag('context put({x:1, y:{a:0}}, ["y","a","b","c"], 2)', 'FEEL_EVAL_UNDEFINED');
   });
 
   it('`context put` 同名重载：`keys:` 收列表、`key:` 只收字符串（TCK 1146 nested007/008）', () => {
@@ -770,7 +782,7 @@ describe('floken-feel · TCK 修复回归 · 形参/类型类错误回退为 nul
       '[2] ** 4',
       '(function() "foo") ** 4',
     ]) {
-      nullDiag(src, 'FEEL_EVAL_TYPE_MISMATCH');
+      nullDiag(src, 'FEEL_EVAL_ARG_TYPE');
     }
     // 合法用法不受影响：幂高于乘法、低于一元、左结合
     expect(v('5 + 2**5')).toBe(37);

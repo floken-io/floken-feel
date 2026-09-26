@@ -48,14 +48,17 @@ function checkBooleans(items: Value[], fnName: string): Value[] {
 
 export const BOOLEAN_BUILTINS: Record<string, NativeFn> = {
   /*
-   * `not(value)`：只接受 `boolean` 与 `null`（三值）。数字 / 字符串 → **返回 null**
-   * （unknown，对齐 §10.3.2.13.1 + feelin）：TCK 0066#003_b/c/d 把 `not(0)`/`not(1)`/`not("true")`
-   * 列成 `errorResult`（期望抛错），规范/feelin 口径是 null。`not(null)` 仍是 `null`。
+   * `not(value)`：只接受 `boolean` 与 `null`（三值）。数字 / 字符串 → **抛**
+   * （默认模式由 `call` 边界转成 `null` + 诊断；`errorMode:'throw'` 下向外抛 ——
+   * TCK 0066#003_b/c/d 把 `not(0)`/`not(1)`/`not("true")` 列成 `errorResult`）。
+   * `not(null)` 仍是 `null`（null 是合法实参，走三值非）。
    */
   not: (a) => {
     requireArity(a, 'not', 1);
     const v = a[0] ?? null;
-    if (v !== null && typeof v !== 'boolean') return null;
+    if (v !== null && typeof v !== 'boolean') {
+      throw argTypeError('not', 'value', 'boolean or null', feelTypeName(v));
+    }
     return tripleNot(v);
   },
   and: (a) => tripleAnd(spread(a)),

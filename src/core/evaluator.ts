@@ -20,6 +20,7 @@ import {
   functionNotAllowed,
   limitExceeded,
   namedArgError,
+  notCallableError,
   optionError,
   temporalNotLoaded,
   undefinedResultError,
@@ -87,6 +88,20 @@ export interface EvaluateOptions {
    * 名字未命中且不是内置类型名 → 判定为「不匹配」（不抛，见 `instanceOfSpec`）。
    */
   types?: Record<string, TypeSpec>;
+  /**
+   * ★ **求值语义层错误的处置模式**（DMN 1.4 §10.3.2.13.1 的双出口）。
+   *
+   * - `'null'`（**默认**，规范语义）：实参不符形参域、或函数结果无定义 →
+   *   结果是 `null`（unknown）**并附一条诊断**；对齐规范与 Camunda / feelin / Drools（默认）。
+   * - `'throw'`：同一情形**抛出** `FeelError`（`FEEL_EVAL_ARG_*` / `FEEL_EVAL_UNDEFINED` /
+   *   `FEEL_EVAL_NOT_CALLABLE` …），对齐 **TCK 的 `errorResult="true"` 口径**。
+   *
+   * ⚠️ 两种模式**都不变**的硬错误（照旧抛）：语法错、能力未加载
+   * `FEEL_NOT_LOADED_TEMPORAL`、S-FEEL 白名单越界、资源上限 —— 这些是调用方无法继续的问题。
+   *
+   * ⚠️ 与 `strictCoercion` **无关**：后者管的是"字符串→数字要不要隐式转换"。
+   */
+  errorMode?: 'null' | 'throw';
 }
 
 /**
@@ -96,6 +111,8 @@ export interface EvaluateOptions {
 export interface FeelEvalRuntime extends EvalRuntime {
   allowed?: ReadonlySet<string>;
   strict: boolean;
+  /** 求值语义层错误处置：`'null'`（默认，规范）| `'throw'`（TCK 严格口径） */
+  errorMode: 'null' | 'throw';
   deadline: number;
   steps: number;
   /** 模型类型表（`instance of <itemDefinition 名>` 用） */
@@ -111,6 +128,7 @@ const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
   'timeoutMs',
   'strictCoercion',
   'types',
+  'errorMode',
 ]);
 
 function isPositiveInt(v: unknown): boolean {
@@ -151,6 +169,12 @@ function assertOptions(options: EvaluateOptions): void {
       FEEL_ERROR_CODES.OPTION_INVALID,
       { option: 'allowedFunctions' },
     );
+  }
+  if (options.errorMode !== undefined && options.errorMode !== 'null' && options.errorMode !== 'throw') {
+    throw optionError("Option 'errorMode' must be either 'null' or 'throw'", FEEL_ERROR_CODES.OPTION_INVALID, {
+      option: 'errorMode',
+      found: options.errorMode,
+    });
   }
 }
 
@@ -235,6 +259,7 @@ function enforceLimits(root: Node, options: EvaluateOptions): void {
 function buildRuntime(options: EvaluateOptions): FeelEvalRuntime {
   const rt: FeelEvalRuntime = {
     strict: options.strictCoercion === true,
+    errorMode: options.errorMode === 'throw' ? 'throw' : 'null',
     deadline: options.timeoutMs === undefined ? 0 : Date.now() + options.timeoutMs,
     steps: 0,
   };
@@ -265,18 +290,55 @@ function diag(
 }
 
 /**
- * 调用边界转换为 `null` 的**参数/类型类**错误码（对齐 DMN 1.4 §10.3.2.13.1 + feelin v8.2.0）。
+ * ★ **求值语义层错误的统一出口**（不经 `call` 边界的节点用这个）。
  *
- * 内置函数在求值期对「arity / 实参类型 / 取值越界 / 命名参数 / 时间字面量非法 / 时长分量跨类」
- * 抛出这些码，属于"调用结果 unknown"——规范把结果定为 `null`，不是 error。故在 `call` 节点
- * 统一捕获并转成 `null + 诊断`。
+ * 两类节点需要它：
+ * ① **运算符**（`=` 跨类型、`between` 的 null 端点、`in <区间>` 的 null 被测试值）；
+ * ② **上下文字面量的重复键**、**调用非函数值**。
  *
- * 注意 `EVAL_UNDEFINED`（函数**结果**无定义，如 `sqrt(-1)`/`log(0)`/`modulo(x,0)`/`product([])`
- * /`stddev([1])`/`{重复键上下文}`）**不在**本集合：它属于"结果"错误而非"参数/类型不符"，按
- * `AGENTS.md §5` 与 TCK `errorResult` 仍须 THROW，故照旧向外抛出。
+ * 行为与 `call` 边界完全同构，只是按 `errorMode` 分岔：
+ * - `'null'`（默认）→ 记诊断 + 返回 `null`；
+ * - `'throw'` → 抛出该错误（`make()` 构造）。
  *
- * 不在此集合的错误（能力未加载 `FEEL_NOT_LOADED_TEMPORAL`、S-FEEL 白名单越界、语法/资源上限）
- * 是调用方**无法继续**的硬错误，照旧向外抛出。
+ * 传**工厂**而不是错误对象：默认模式下构造一个永不抛出的错误对象没有意义。
+ */
+function semanticFail(
+  runtime: FeelEvalRuntime | undefined,
+  make: () => FeelError,
+  warnings: Diagnostic[],
+  node: Node,
+  /**
+   * 默认模式下使用的**诊断码**（缺省用抛出码自身）。
+   * 只在「诊断码与抛出码不同名」时传 —— 目前只有「调用非函数值」：抛出
+   * `FEEL_EVAL_NOT_CALLABLE`，诊断为 `FEEL_EVAL_NO_FUNCTION`（两个命名空间不重叠，见 errors.ts）。
+   */
+  diagCode?: string,
+): null {
+  if (runtime?.errorMode === 'throw') throw make();
+  const e = make();
+  diag(warnings, diagCode ?? e.code, e.message, node);
+  return null;
+}
+
+/**
+ * 调用边界转换为 `null` 的**求值语义层**错误码（对齐 DMN 1.4 §10.3.2.13.1 + Camunda/feelin）。
+ *
+ * 内置函数在求值期抛出的这些码，一律属于"调用结果 unknown" —— 规范把结果定为 `null`，
+ * 不是 error。故在 `call` 节点统一捕获并转成 `null + 诊断`（错误信息与定位不丢）。
+ *
+ * 覆盖两类：
+ * ① **参数/类型类**：arity / 实参类型 / 取值越界 / 命名参数 / 时间字面量非法 / 时长分量跨类；
+ * ② **结果无定义** `EVAL_UNDEFINED`：`sqrt(-1)` / `log(0)` / `modulo(x,0)` / `product([])` /
+ *    `stddev([1])` / `number()` 转换失败 / `context` 重复键 / `context put` 空路径或死胡同。
+ *
+ * ② 同样转 null 的依据：DMN 1.4 §10.3.2.13.1 + Camunda 官方语义（"if something goes wrong,
+ * return null"，明确含 "A function can't be invoked successfully with the given arguments" 与
+ * "An operation is not defined for the given values"）；且这类"换个输入就有救"，按 `AGENTS.md §5`
+ * 本就该走诊断通道而非抛出。实证：TCK 这些用例的 `<expected>` 值本身就是 `null`，
+ * 只是额外挂了 `errorResult="true"`（那部分已登记 IGNORED，见 `tooling/tck/ignored.json`）。
+ *
+ * **不在此集合**（照旧抛出）：语法错、能力未加载 `FEEL_NOT_LOADED_TEMPORAL`、S-FEEL 白名单越界、
+ * 资源上限 —— 这些是调用方**无法继续**的硬错误（Camunda 同样抛）。
  */
 const PARAM_ERROR_CODES = new Set<string>([
   FEEL_ERROR_CODES.EVAL_ARG_COUNT,
@@ -285,6 +347,7 @@ const PARAM_ERROR_CODES = new Set<string>([
   FEEL_ERROR_CODES.EVAL_NAMED_ARG,
   FEEL_ERROR_CODES.EVAL_TEMPORAL_VALUE,
   FEEL_ERROR_CODES.EVAL_DURATION_COMPONENT,
+  FEEL_ERROR_CODES.EVAL_UNDEFINED,
 ]);
 
 /** 数字读取（`strictCoercion` 下拒绝字符串→数字） */
@@ -601,7 +664,12 @@ export function evaluateNode(
        * `compareIn`：nil 值/测试 → unknown → null）。列表域的 `null in [null]` 仍是普通相等判定。
        */
       if (v === null && isRange(domain)) {
-        return null;
+        return semanticFail(
+          runtime,
+          () => argTypeError('in', 'value', 'a non-null value against a range', 'null'),
+          warnings,
+          node,
+        );
       }
       // 区间：前缀写法（`(< 5)` / `(!=5)`）按运算符判，显式写法按端点包含判
       if (isRange(domain)) return rangeMatch(domain, v);
@@ -640,7 +708,15 @@ export function evaluateNode(
        */
       const c1 = compareValues(v, lo);
       const c2 = compareValues(v, hi);
-      if (c1 === null || c2 === null) return null; // 任一端不可比较 / 为 null → 未知
+      if (c1 === null || c2 === null) {
+        // 不可比较 / 为 null → 未知（`errorMode: 'throw'` 下抛，TCK 0071 的 3 条）
+        return semanticFail(
+          runtime,
+          () => argTypeError('between', 'value/low/high', 'comparable non-null values', 'null or incomparable'),
+          warnings,
+          node,
+        );
+      }
       return c1 >= 0 && c2 <= 0;
     }
 
@@ -693,7 +769,17 @@ export function evaluateNode(
          * 放在求值期而非语法期 —— 语法上 `{a:1, a:2}` 完全合法。
          */
         if (entries.has(e.key)) {
-          throw undefinedResultError('context', { reason: 'duplicate entry key', key: e.key });
+          /*
+           * ⚠️ 上下文字面量**不经 `call` 边界**，拿不到那层"抛 → 转 null+诊断"的转换，
+           * 故走 `semanticFail`（与 `context([...])` 内置函数走边界后的结果完全一致）：
+           * 默认模式 `null` + 诊断 `FEEL_EVAL_UNDEFINED`；`errorMode:'throw'` 下抛同码错误。
+           */
+          return semanticFail(
+            runtime,
+            () => undefinedResultError('context', { reason: 'duplicate entry key', key: e.key }),
+            warnings,
+            node,
+          );
         }
         const v = evaluateNode(e.value, scope, warnings, builtins, runtime);
         entries.set(e.key, v);
@@ -749,18 +835,22 @@ export function evaluateNode(
        * `@"2023-11-11"()`、`123()`、`true()`、`false()`。
        *
        * 规范把"调用目标不符参数域"的结果定为 `null`（unknown），不是 error；feelin 对此
-       * `addWarning('NO_FUNCTION_FOUND')` 后返回 null。故走诊断通道，不抛。
+       * `addWarning('NO_FUNCTION_FOUND')` 后返回 null。故**默认模式**走诊断通道，不抛。
+       *
+       * `errorMode: 'throw'` 下改为抛 `FEEL_EVAL_NOT_CALLABLE`（TCK 1131 的 8 条全标 errorResult）。
        */
       if (!fn) {
-        diag(
+        return semanticFail(
+          runtime,
+          () =>
+            notCallableError(
+              node.callee.type === 'name' ? node.callee.name : null,
+              calleeType,
+            ),
           warnings,
-          FEEL_DIAGNOSTIC_CODES.EVAL_NO_FUNCTION,
-          node.callee.type === 'name'
-            ? `Function '${node.callee.name}' not found`
-            : 'Expression is not callable',
           node,
+          FEEL_DIAGNOSTIC_CODES.EVAL_NO_FUNCTION,
         );
-        return null;
       }
 
       /*
@@ -787,6 +877,8 @@ export function evaluateNode(
         result = fn(args, ctx, runtime, reordered?.used);
       } catch (e) {
         if (e instanceof FeelError && PARAM_ERROR_CODES.has(e.code)) {
+          // 严格口径：同一批错误码改为向外抛（对齐 TCK `errorResult="true"`）
+          if (runtime?.errorMode === 'throw') throw e;
           diag(warnings, e.code, e.message, node);
           return null;
         }
@@ -825,12 +917,31 @@ export function evaluateNode(
       const l = num(lv, runtime);
       const r = num(rv, runtime);
       /*
-       * 幂 `**` 与 `+ - * /` 同口径：**非数字 → null**（三值传播 + 对齐 feelin）。
-       * 规范不要求幂运算对 `null`/非数字抛错；`num()` 已把非数字放宽成 `null`，
-       * 落到下面的 `l === null || r === null` 统一返回 null（TCK 0075 的 errorResult 用例
-       * `"foo" ** 4` 等，feelin 同样返回 null）。
+       * 幂 `**` 的非数字操作数 → 见上面的 `**` 分流（严格模式抛，默认 null + 诊断）。
+       * `+ - * /` 与 null → 三值传播，两种模式都返回 null（TCK 期望 null，不是 error）。
        */
       if (l === null || r === null) {
+        /*
+         * ★ **只有幂 `**`** 在严格模式下抛：TCK 0075#002~#011 的 10 条（`"foo" ** 4`、
+         * `true ** 4`、`date(...) ** 4`、`{a:2} ** 4` …）全标 `errorResult`。
+         *
+         * ⚠️ `+ - * /` **不能**跟着抛：它们遇到 null 是**三值传播**（`1 + null` = null，
+         * TCK 期望 `null` 而非 error）。故只给 `**` 分流，其余照旧 diag + null。
+         */
+        if (node.op === '**') {
+          return semanticFail(
+            runtime,
+            () =>
+              argTypeError(
+                '**',
+                'operand',
+                'number',
+                l === null ? feelTypeName(lv) : feelTypeName(rv),
+              ),
+            warnings,
+            node,
+          );
+        }
         diag(
           warnings,
           FEEL_DIAGNOSTIC_CODES.EVAL_TYPE_MISMATCH,
@@ -867,8 +978,22 @@ export function evaluateNode(
          * - 同类型 → 深相等。
          */
         if (l !== null && r !== null && !sameTypeFamily(l, r)) {
-          // 跨类型比较：结果 unknown（null），不是 error（对齐 feelin：`equals` 返回 null）
-          return null;
+          /*
+           * 跨类型比较：结果 unknown（`null`），不是 error（对齐 feelin：`equals` 返回 null）。
+           * `errorMode: 'throw'` 下抛（TCK 0068 的 12 条全标 `errorResult`）。
+           */
+          return semanticFail(
+            runtime,
+            () =>
+              argTypeError(
+                node.op,
+                'operands',
+                'values of the same type on both sides',
+                `${feelTypeName(l)} and ${feelTypeName(r)}`,
+              ),
+            warnings,
+            node,
+          );
         }
         const eq = deepEquals(l, r);
         return node.op === '=' ? eq : !eq;
@@ -1100,6 +1225,30 @@ export function evaluate(
   const ctx = toFeelContext(context);
   const value = evaluateNode(node, ctx, warnings, options.builtins ?? BUILTINS, runtime);
   return { value, warnings };
+}
+
+/**
+ * ★ **严格口径求值**（`errorMode: 'throw'`）。
+ *
+ * 与 `evaluate` **同一套语义**，只差求值语义层错误的出口：
+ * 实参不符形参域、函数结果无定义、调用非函数值 → **抛** `FeelError`，而不是返回 `null` + 诊断。
+ *
+ * 用途：
+ * - 对齐 **DMN TCK 的 `errorResult="true"` 口径**（跑分器用它跑"严格口径"）；
+ * - 宿主想在决策表里**把类型错误当故障**而不是"未知"（默认 `evaluate` 是静默 `null`）。
+ *
+ * ⚠️ 两种模式下**都一样抛**的硬错误：语法错、能力未加载、S-FEEL 白名单越界、资源上限。
+ *
+ * @example
+ * evaluate('abs(null)')        // → { value: null, warnings: [FEEL_EVAL_ARG_TYPE] }
+ * evaluateStrict('abs(null)')  // → throw FeelTypeError  code: FEEL_EVAL_ARG_TYPE
+ */
+export function evaluateStrict(
+  src: string,
+  context?: unknown,
+  options: EvaluateOptions = {},
+): EvalResult {
+  return evaluate(src, context, { ...options, errorMode: 'throw' });
 }
 
 /**

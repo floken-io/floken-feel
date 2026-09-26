@@ -8,7 +8,14 @@
  * 时间函数不在本入口 —— 见 `floken-feel/temporal`（NFR-F12：核心不静态依赖 temporal）。
  */
 
-export { evaluate, unaryTest, evaluateNode, evalUnaryTerm, measureAst } from '../core/evaluator.js';
+export {
+  evaluate,
+  evaluateStrict,
+  unaryTest,
+  evaluateNode,
+  evalUnaryTerm,
+  measureAst,
+} from '../core/evaluator.js';
 export type { EvaluateOptions, FeelEvalRuntime } from '../core/evaluator.js';
 
 export { parseExpression, parseUnaryTests, INSTANCE_TYPES } from '../core/parser.js';

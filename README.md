@@ -126,43 +126,52 @@ evaluate('now()', ctx, {
 | 时间函数 | 主入口内置 | 放在 `./temporal`（NFR-F12 隔离，**必需依赖 `temporal-polyfill`**）；**import 即注册** —— 未加载时调用抛「带可执行修复提示」的错误 |
 | 带空格内置名 | 上下文相关解析 | 标准名 **+ camelCase 别名** 双注册；名字合并规则与高亮共用 |
 | 自定义内置函数 | — | `registerBuiltin(name, fn)` |
-| 求值选项 | 无 | `clock` / `allowedFunctions` / `maxNodes` / `maxDepth` / `timeoutMs` / `strictCoercion` |
+| 求值选项 | 无 | `clock` / `allowedFunctions` / `maxNodes` / `maxDepth` / `timeoutMs` / `strictCoercion` / **`errorMode`** |
+| **严格口径求值**（错误改为抛） | 无 | **`evaluateStrict(src, ctx?, opts?)`**（= `errorMode:'throw'`） |
 
 ---
 
-## 1.3 TCK 口径与当前成绩（2026-09-25 首跑；2026-09-26 第六轮 + 规范对齐回退）
+## 1.3 TCK 口径与当前成绩（2026-09-25 首跑；2026-09-26 第七轮 · 错误双模式）
 
 本包用 **DMN TCK 的 B 口径**自证：官方 **79 个 FEEL label**（`TestCases/*/*-feel-*`），共 **2053 条断言**。
 
-其中 **55 条按 NFR-F14 登记 IGNORED**（`tooling/tck/ignored.json`，理由逐条写死）——它们不是"我们做错了"，
-而是**该断言考的能力不属于 FEEL 表达式层**：`0076-feel-external-java`（18 条，Java 绑定要 JVM）、
+其中 **57 条按 NFR-F14 登记 IGNORED**（`tooling/tck/ignored.json`，理由逐条写死）——它们不是"我们做错了"，
+而是**该断言考的能力不属于 FEEL 表达式层**，或 **TCK 自身矛盾**：`0076-feel-external-java`（18 条，Java 绑定要 JVM）、
 `0082-feel-coercion`（36 条，考的是 DMN 声明类型与值之间的强制转换，归属 `floken-dmn`），
-外加单条 `0092#013`（decisionService 调用，与 0082 同族，按 `label#id` 粒度登记）。
-IGNORED 不进任何口径的分子分母，单独记 ⊘，故**计入口径是 1998 条**。
+外加单条 `0092#013`（decisionService 调用，与 0082 同族）与 `0057#009/#010`
+（`{a:1}.b` / `null.b`：description 写 "results in null" 却标 `errorResult`，从规范）。
+IGNORED 不进任何口径的分子分母，单独记 ⊘，故**计入口径是 1996 条**。
 
-| 口径 | 通过 | 说明 |
-|---|---:|---|
-| **宽松**（规范语义：参数/类型不符 → `null`） | **1990 / 1998（99.6%）** | **我们的主口径 / F3 判据② 按此裁定** |
-| 严格（TCK `errorResult` 字面：期望抛错就必须抛错） | 1519 / 1998（76.0%） | **不作门禁**；与宽松的差额即 spec-divergence 台账 |
+### ★ 两套口径，两个入口 —— 不用二选一
 
-79 组中 **73 组满分**；`tooling/tck/baseline.labels.json` 是**逐 label 防退化基线**（重跑后任一组低于它即判退化）。
+规范（DMN 1.4 §10.3.2.13.1：实参不符参数域 → 结果是 `null`）与 TCK（`errorResult="true"`：
+期望抛错）长期冲突。本包**同时满足两者**，把选择权交给调用方：
 
-★ **判据② 以规范为准，不以 TCK `errorResult` 字面为准**（2026-09-26 拍板「必须对齐规范」）：
-DMN 1.4 §10.3.2.13.1 规定**实参不符参数域 → 结果是 `null`（unknown），不是 error**；
-feelin v8.2.0 / Camunda(7&8) / Drools(默认) 同此。故**参数/类型类错误一律返回 `null`（+诊断）**，
-TCK 标 `errorResult="true"` 的这类用例属 **spec-divergence**（当前 471 条 / 50 组），不算缺口。
-跑分器仍会打出「严格口径缺口 N 条 / M 组」的按组分布（`--json` 另写 `tmp/tck/loose.json`），
-但那是**规范差异台账**，不是待办清单。
+| 入口 | `errorMode` | 语义 | 分数 |
+|---|---|---|---|
+| `evaluate(src)` | `'null'`（**默认**） | 规范语义：`null` + 诊断 | 宽松 **1988/1996（99.6%）** |
+| `evaluateStrict(src)` | `'throw'` | TCK 严格口径：抛 `FeelError` | 严格 **1988/1996（99.6%），`errorResult` 缺口 0** |
 
-**仍须抛错的三类**：① `FEEL_EVAL_UNDEFINED`——函数**结果**无定义（`sqrt(-1)` / `log(0)` /
-`modulo(x,0)` / `product([])` / `stddev([1])` / `{重复键}` / `context put` 空路径或死胡同）；
-② 硬错误（能力未加载 / S-FEEL 白名单越界 / 语法错 / 资源上限）；③ `@"…"` 构造器字面量语法错。
+```ts
+evaluate('abs(null)')        // { value: null, warnings: [{ code: 'FEEL_EVAL_ARG_TYPE', ... }] }
+evaluateStrict('abs(null)')  // throw FeelTypeError  code: 'FEEL_EVAL_ARG_TYPE'
+```
 
-**已知 gap（8 条，不打算修）**
+内置函数**一律抛**（没有"静默 `return null`"），由 `call` 边界按模式统一处置 ——
+**一条代码路径供两种口径**，故默认模式的值不变（仍是 `null`，只是多了诊断）。
+跑分器加 `--strict` 即走严格口径（`node tooling/tck/run.mjs --strict`）。
+
+⚠️ 两种模式**都抛**（不受开关影响）：`@"…"` 构造器字面量语法错、能力未加载 /
+S-FEEL 白名单越界 / 语法错 / 资源上限。
+
+79 组中 **73 组满分**；基线**两套分开存**：`baseline.labels.json`（默认）与
+`baseline.labels.strict.json`（严格），重跑后任一组低于它即判退化。
+
+**已知 gap（8 条，不打算修）** —— 两种模式都存在，**是"值算错"不是"该抛没抛"**
 - `1115#015/#016/#029/#030`、`1117#027/#028`（6 条）用的是 9 位年份（`999999999-12-31`）——
   写法合法，但超出 `temporal-polyfill` 可表示范围（±275760），按 `known-gaps` 记：
   给 `null` 而不是抛错（见 `05-包需求-floken-feel.md` §7.5）。
-- `1111#K2-1`、`0092#009`、`0057#009/#010`（4 条）是 **TCK 自身矛盾**
+- `0092#009`、`1111#K2-1`（2 条）是 **TCK 自身矛盾**
   （`description` 与 `errorResult` 打架，或与别的组冲突）→ **从规范**，不强行适配（§7.8）。
 
 > ⚠️ **别拿 `3391 / 3495` 来问本包** —— 那是 **A 口径**（完整 DMN TCK，含 DRG 遍历 / 决策表 / 命中策略），

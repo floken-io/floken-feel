@@ -29,7 +29,11 @@
  * 用法：
  *   node tooling/tck/run.mjs [--cases=tmp/tck/cases.json] [--json] [--top=20]
  *                            [--baseline=tooling/tck/baseline.labels.json] [--write-baseline]
- *                            [--label=1130-feel-interval] [--show-fail=5]
+ *                            [--label=1130-feel-interval] [--show-fail=5] [--strict]
+ *
+ * `--strict`：用 `evaluateStrict`（`errorMode:'throw'`）跑，出**官方严格口径**分数
+ * （`errorResult="true"` 的用例必须抛错才算过）。基线与默认口径**分开存**
+ * （`baseline.labels.strict.json`），两套口径各自防退化、互不干扰。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -74,6 +78,18 @@ const IGNORED_CASES = IGNORED_FILE.cases ?? {};
 
 /** R5：固定时钟（2026-05-12 是有意选的"周二"，能同时暴露周历/工作日类边界） */
 const CLOCK = () => new Date('2026-05-12T00:00:00.000Z');
+
+/**
+ * ★ `--strict`：用 `evaluateStrict`（`errorMode:'throw'`）跑被测表达式。
+ *
+ * 默认（不开）时，引擎按 DMN 1.4 §10.3.2.13.1 把参数/类型类错误与"结果无定义"
+ * 返回成 `null + 诊断` —— 于是 TCK 那批 `errorResult="true"` 的用例只能算「宽松通过」。
+ * 开了 `--strict`，同一批错误改为抛出，就能跑出**官方严格口径**的真实分数。
+ *
+ * ⚠️ 只作用于**被测表达式**：`deps`（模型内其它 decision）与 `<expected>` 期望值
+ * 一律走默认模式 —— 期望值只是"用来比对的写法"，它自己抛错不代表用例失败。
+ */
+const STRICT = argv.includes('--strict');
 const OPTIONS = { clock: CLOCK };
 
 /** 按用例所属模型补上类型表（无关用例共用同一份 OPTIONS，不额外分配） */
@@ -218,7 +234,12 @@ for (const c of cases) {
           inv.params.forEach((p, i) => {
             s = s.with({ [p.name]: args[i] ?? null });
           });
-          return evaluate(inv.source, s, opts).value;
+          /*
+           * ★ BKM 体是**被测逻辑本身**（不是"输入数据"），故 `--strict` 下必须继承严格模式
+           * —— 否则 `bkm_016_1(sqrt)`（`fn1(10,2)`，sqrt 收 2 个实参）会在体内被转成
+           * `null + 诊断`，外层的真实错误就被吞掉了（0092#016）。
+           */
+          return evaluate(inv.source, s, STRICT ? { ...opts, errorMode: 'throw' } : opts).value;
         }),
       });
       if (/\s/.test(inv.name)) registerSpacedName(inv.name);
@@ -247,7 +268,8 @@ for (const c of cases) {
     let threw = false;
     let error = null;
     try {
-      actual = evaluate(c.expression, ctx, opts).value;
+      // ★ 只有被测表达式走严格模式；deps 与 <expected> 走默认（见 STRICT 处注释）
+      actual = evaluate(c.expression, ctx, STRICT ? { ...opts, errorMode: 'throw' } : opts).value;
     } catch (e) {
       threw = true;
       error = e;
@@ -417,7 +439,10 @@ if (showFail > 0) {
 
 // ---------- 基线对比 / 写出 ----------
 
-const baselinePath = arg('baseline', 'tooling/tck/baseline.labels.json');
+const baselinePath = arg(
+  'baseline',
+  STRICT ? 'tooling/tck/baseline.labels.strict.json' : 'tooling/tck/baseline.labels.json',
+);
 if (argv.includes('--write-baseline')) {
   fs.mkdirSync(path.dirname(path.resolve(baselinePath)), { recursive: true });
   fs.writeFileSync(

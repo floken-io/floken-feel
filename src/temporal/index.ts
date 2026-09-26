@@ -28,6 +28,7 @@ import { feelTypeName, toStr } from '../core/values.js';
 import {
   FEEL_ERROR_CODES,
   FeelEnvError,
+  argCountError,
   argTypeError,
   durationComponentError,
   temporalValueError,
@@ -1059,10 +1060,14 @@ function construct(kind: 'date' | 'time' | 'dateTime'): NativeFn {
 function durationFn(): NativeFn {
   const fnName = 'duration';
   return (args) => {
-    if (args.length !== 1) return null; // arity 不符 → null
+    /*
+     * 参数校验**抛**（默认模式由 `call` 边界转成 `null` + 诊断，严格模式向外抛）：
+     * arity 不符、null / 非字符串。TCK 1120 把这些列成 `errorResult`。
+     */
+    if (args.length !== 1) throw argCountError(fnName, 1, args.length);
     if (!getTemporal()) return null;
     const v = args[0] ?? null;
-    if (typeof v !== 'string') return null; // null / 非字符串 → null（unknown）
+    if (typeof v !== 'string') throw argTypeError(fnName, 'literal', 'string', feelTypeName(v));
     return parseText('duration', v, fnName);
   };
 }
@@ -1177,19 +1182,19 @@ function toDateLike(v: Value): any | null {
 function yearsAndMonthsDuration(args: Value[]): Value {
   const fnName = 'years and months duration';
   /*
-   * ★ 参数校验**返回 null**（unknown，对齐规范 §10.3.2.13.1 + feelin）：
-   * arity 错（`()` / 单参）、`null` 端点、非日期类型（`2017` / `"2012T-…"` / `[]`）——
-   * 结果都是 null，不是 error。TCK 1121 把这些列成 errorResult（期望抛错），但规范口径是 null。
+   * ★ 参数校验**抛**（默认模式由 `call` 边界转成 `null` + 诊断，严格模式向外抛 ——
+   * TCK 1121 把这些列成 errorResult）：arity 错（`()` / 单参）、`null` 端点、
+   * 非日期类型（`2017` / `"2012T-…"` / `[]`）。
    */
-  if (args.length !== 2) return null;
+  if (args.length !== 2) throw argCountError(fnName, 2, args.length);
   const T = getTemporal();
   if (!T) return null;
   const from = args[0] ?? null;
   const to = args[1] ?? null;
   const a = toDateLike(from);
-  if (!a) return null;
+  if (!a) throw argTypeError(fnName, 'from', 'date or date and time', feelTypeName(from));
   const b = toDateLike(to);
-  if (!b) return null;
+  if (!b) throw argTypeError(fnName, 'to', 'date or date and time', feelTypeName(to));
   try {
     const base = (b.year - a.year) * 12 + (b.month - a.month);
     const daysInMonth = a.daysInMonth ?? 30;

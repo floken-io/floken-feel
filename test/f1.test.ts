@@ -139,21 +139,22 @@ describe('floken-feel · F1 新增内置函数', () => {
     expect(evaluate('product([2, 3, 4])').value).toBe(24);
     expect(evaluate('stddev([1, 2, 3, 4])').value).toBeCloseTo(1.2909944487358056, 10);
     /*
-     * 空列表 / 样本数不足 → **抛**（不是 null）。TCK 官方把这些标 `errorResult`：
-     * `product([])`（0094#002）、`stddev([])`（0063#007）都是 error；
-     * 而 `median([])`（0061#007）官方期望却是 `null` —— 差别是**有没有定义**，
-     * 不是"空列表一律 null"。口径见 `AGENTS.md` §5：内置函数无定义 → 抛。
+     * 空列表 / 样本数不足 → **null + 诊断**（不是抛）。
+     * 对齐 DMN 1.4 §10.3.2.13.1 + Camunda 语义（"if something goes wrong, return null"，
+     * 明确含 "An operation is not defined for the given values"）：`product([])`（0094#002）、
+     * `stddev([1])`（0063#007）这类"结果无定义"与"参数类型不符"同属 unknown 一档，都落 null。
+     * 实证：TCK 这些用例的 `<expected>` 值本身就是 `null`，只是额外挂了 `errorResult="true"`
+     * （那部分已按 `label#id` 登记 IGNORED —— 见 `tooling/tck/ignored.json`）。
+     * `median([])`（0061#007）官方期望同样是 `null` —— 三条路径现统一为 null。
      */
-    const code = (src: string): string | null => {
-      try {
-        evaluate(src);
-        return null;
-      } catch (e) {
-        return (e as { code?: string }).code ?? null;
-      }
-    };
-    expect(code('product([])')).toBe('FEEL_EVAL_UNDEFINED');
-    expect(code('stddev([1])')).toBe('FEEL_EVAL_UNDEFINED');
+    for (const src of ['product([])', 'stddev([1])']) {
+      const r = evaluate(src);
+      expect(r.value, `value of ${src}`).toBe(null);
+      expect(
+        r.warnings.some((w: { code?: string }) => w.code === 'FEEL_EVAL_UNDEFINED'),
+        `diag of ${src}`,
+      ).toBe(true);
+    }
     expect(evaluate('median([])').value).toBe(null);
   });
 

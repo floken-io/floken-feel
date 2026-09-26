@@ -81,9 +81,14 @@ export const CONTEXT_BUILTINS: Record<string, NativeFn> = {
   'get value': (a) => {
     requireArity(a, 'get value', 2);
     const c = a[0] ?? null;
-    if (!isContext(c)) return null;
+    /*
+     * 实参类型不符 → **抛**（不再静默 null）。
+     * 默认模式由 `call` 边界转成 `null` + 诊断，`errorMode:'throw'` 下向外抛
+     * （TCK 0080 的 5 条标 `errorResult`）。键不存在仍是 `null`（那是"值存在但没这个键"）。
+     */
+    if (!isContext(c)) throw argTypeError('get value', 'm', 'context', feelTypeName(c));
     const key = a[1] ?? null;
-    if (typeof key !== 'string') return null;
+    if (typeof key !== 'string') throw argTypeError('get value', 'key', 'string', feelTypeName(key));
     return c.get(key) ?? null;
   },
 
