@@ -12,6 +12,7 @@
 
 import type { NativeFn, Value } from '../core/types.js';
 import { compareValues } from '../core/values.js';
+import { decimalModulo } from '../core/decimal.js';
 import { argTypeError, undefinedResultError } from '../core/errors.js';
 import {
   optScale,
@@ -65,7 +66,13 @@ export const NUMERIC_BUILTINS: Record<string, NativeFn> = {
     const dividend = reqNumber(a, 0, 'modulo', 'dividend');
     const divisor = reqNumber(a, 1, 'modulo', 'divisor');
     if (divisor === 0) throw undefinedResultError('modulo', { dividend, divisor });
-    return dividend - divisor * Math.floor(dividend / divisor);
+    /*
+     * ★ 十进制优先：`modulo(10.1, 4.5)` 必须是 **1.1**，double 路径给的是
+     *   1.0999999999999996（TCK 0056 #017a~#017d 逐条钉死）。
+     *   floor 语义（结果符号跟随 divisor）由 `decimalModulo` 保证，与这里原来的
+     *   算式一致；decimal 路径不可用时回退原式，行为不变。
+     */
+    return decimalModulo(dividend, divisor) ?? dividend - divisor * Math.floor(dividend / divisor);
   },
   sqrt: (a) => {
     requireArity(a, 'sqrt', 1);

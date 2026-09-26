@@ -9,6 +9,7 @@
  */
 
 import { parseExpression, parseUnaryTests } from './parser.js';
+import { decimalArith } from './decimal.js';
 import { BUILTINS } from '../builtins/registry.js';
 import {
   TEMPORAL_FUNCTIONS,
@@ -1072,6 +1073,19 @@ export function evaluateNode(
         );
         return null;
       }
+      /*
+       * ★ 十进制优先（DMN 1.5 §10.3.2.1 规定 `number` 是 **decimal128** 而非 binary64）：
+       *   `1.2345 + 2.234` 必须是 `3.4685` 而不是 `3.4684999999999997`，
+       *   `modulo(10.1, 4.5)` 这类金额级误差更是真实缺陷、不是计分细节。
+       *
+       *   decimal 路径给不出结果时（非有限数、**非整数**指数、位数爆炸）才回退 double ——
+       *   那些情形回退的结果与现状一致，不会更差。
+       *
+       * ⚠️ 除零语义**不变**：FEEL 里 `x / 0` 是 `null`，不是 `Infinity`。
+       */
+      if (node.op === '/' && r === 0) return null;
+      const exact = decimalArith(node.op, l, r);
+      if (exact !== null) return exact;
       switch (node.op) {
         case '+':
           return l + r;
@@ -1080,11 +1094,9 @@ export function evaluateNode(
         case '*':
           return l * r;
         case '/':
-          return r === 0 ? null : l / r;
-        case '**':
-          return l ** r;
+          return l / r;
         default:
-          return null;
+          return l ** r;
       }
     }
 
