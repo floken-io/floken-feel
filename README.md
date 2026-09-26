@@ -264,12 +264,12 @@ evaluate('listContains([1,2], 2)').value;  // true
 | 函数 | `invoke` |
 | 时间 | 见 `./temporal` 档（`date` `time` `date and time` `duration` `years and months duration` `now` `today` 及分量访问器） |
 
-> **版本口径（2026-09-26 拍板：按最新规范，不做旧版兼容层）**：
+> **版本口径（2026-09-26 拍板：按最新规范实现语言层；元模型权威版本 = DMN 1.5 + 导入双向兼容 1.3~1.6，见 Q35）**：
 > 覆盖 **DMN 1.4 全量** + 已补齐的 **1.5/1.6 语言层**：
 > `list replace`（1.5）、**duration 取负** `-duration("PT1H")`（1.5）、`range("[18..21)")` 字符串构造（1.5）、
 > 科学计数法数字字面量 `1.2e3`（1.5）、`@"PT5H"` 时间字面量（1.4）。
 > **未做**：**B-FEEL**（1.6 新增的第二语义方言，需独立开关）、隐式 `date → date and time` 转换
-> （须与元模型升 1.6 同步做，否则会与 1.4 TCK 语料相冲）。详见 `05-包需求-floken-feel.md` §7.11。
+> （须与 TCK 语料升版同步做，否则会与 1.5 语料相冲）。详见 `05-包需求-floken-feel.md` §7.11。
 
 > 各域实现按域拆档在 `src/builtins/`（`numeric` / `string` / `list` / `boolean` / `conversion` / `context` / `function`），
 > 新增内置函数只需加到对应域文件，注册表自动汇总。
