@@ -839,12 +839,14 @@ function asTimeLike(v: Value): FeelTemporal | null {
  * 从一个已有时间值里**取日期部分**（`date(<date/date-time>)`，TCK 1115#017~#024、#051）。
  * date → 原样；date and time → 年月日（偏移/时区/时分秒一律丢弃）。
  */
-function dateOf(v: FeelTemporal): Value {
+export function dateOf(v: Value): Value {
   const T = getTemporal();
   if (!T) return null;
-  if (v.kind === 'date') return v;
-  if (v.kind !== 'dateTime') return null;
-  const raw = v.raw as { year: number; month: number; day: number };
+  const t = isTemporal(v) ? v : null;
+  if (!t) return null;
+  if (t.kind === 'date') return t;
+  if (t.kind !== 'dateTime') return null;
+  const raw = t.raw as { year: number; month: number; day: number };
   try {
     return wrap('date', T.PlainDate.from({ year: raw.year, month: raw.month, day: raw.day }));
   } catch {
@@ -859,19 +861,21 @@ function dateOf(v: FeelTemporal): Value {
  * - `date and time` → 时分秒 + **它自己的偏移/时区**（从 `iso` 回溯，Plain* 会丢偏移）；
  * - `date` → `00:00:00Z`（TCK 1116#053 的期望如此：日期没有偏移，转成时刻按零偏移记）。
  */
-function timeOf(v: FeelTemporal): Value {
+export function timeOf(v: Value): Value {
   const T = getTemporal();
   if (!T) return null;
-  if (v.kind === 'time') return v;
-  if (v.kind === 'date') {
+  const t = isTemporal(v) ? v : null;
+  if (!t) return null;
+  if (t.kind === 'time') return t;
+  if (t.kind === 'date') {
     try {
       return wrap('time', T.PlainTime.from({ hour: 0, minute: 0, second: 0 }), undefined, ZERO_OFFSET);
     } catch {
       return null;
     }
   }
-  if (v.kind !== 'dateTime') return null;
-  const raw = v.raw as {
+  if (t.kind !== 'dateTime') return null;
+  const raw = t.raw as {
     hour: number;
     minute: number;
     second: number;
@@ -888,7 +892,7 @@ function timeOf(v: FeelTemporal): Value {
       microsecond: raw.microsecond,
       nanosecond: raw.nanosecond,
     });
-    return wrap('time', pt, undefined, parseZone(v.iso));
+    return wrap('time', pt, undefined, parseZone(t.iso));
   } catch {
     return null;
   }
@@ -982,7 +986,17 @@ function dateTimeFromArg(v: Value, fnName: string): Value {
 /**
  * `date(<y>, <m>, <d>)` 分量式（TCK 1115#025~#030、#042~#047、#052）。
  *
- * 分量的**类型与范围**是我们守的（必须是整数、月 1–12、日 1–31）；闰年/月末交 Temporal。
+ * 分量的**类型与范围**是我们守的（必须是整数、月 1–12、日 1–31）；
+ * 「**月内有没有这一天**」交给 Temporal —— 但必须显式 `overflow: 'reject'`：
+ *
+ * ⚠️ Temporal 对**对象**分量的默认 overflow 是 `constrain`，会静默规整：
+ * `date(2020, 2, 30)` → `2020-02-29`、`date(2021, 2, 29)` → `2021-02-28`。
+ * 这与两条既有行为**自相矛盾**：`date("2020-02-30")`（字符串路径，Temporal 字符串解析本就 reject）
+ * 与 `date(999999999, 2, 30)`（扩展年路径，由 `extendedYearComponents` 自己守）都返回 `null`。
+ * 参照实现 feelin 同样是 `null`（`INVALID_ARGUMENTS: '2020', '2', '30' is not a valid date`）。
+ * 故此处强制 `reject`：非法日期进 `catch`，由 `extendedYearComponents` 判定为「普通年」返回
+ * `null` 后抛诊断（宽松模式 → `null`）。
+ *
  * `|year| > 275760` 超出实现源可表示范围（TCK 用 9 位年测到）→ 给 `null` 并登记 `known-gaps`；
  * 而 10 位年（`-1000999999`）本身就是非法写法 → 抛（由 `intComponent` 的范围实现）。
  */
@@ -993,7 +1007,8 @@ function dateOfComponents(yv: Value, mv: Value, dv: Value, fnName: string): Valu
   const month = intComponent(mv, fnName, 'month', 1, 12);
   const day = intComponent(dv, fnName, 'day', 1, 31);
   try {
-    return wrap('date', T.PlainDate.from({ year, month, day }));
+    // `overflow: 'reject'` —— 拒绝「2 月 30 日」这类月内天数溢出，见上方注释
+    return wrap('date', T.PlainDate.from({ year, month, day }, { overflow: 'reject' }));
   } catch {
     const ext = extendedYearComponents(year, month, day);
     if (ext !== null) return ext; // 写法合法、只是超出实现源范围
@@ -1013,7 +1028,14 @@ function timeOfComponents(hv: Value, mv: Value, sv: Value, ov: Value, fnName: st
   const second = intComponent(sv, fnName, 'second', 0, 59);
   const zone = ov === null || ov === undefined ? NO_ZONE : offsetZone(ov, fnName);
   try {
-    return wrap('time', T.PlainTime.from({ hour, minute, second }), undefined, zone);
+    // 同 `dateOfComponents`：显式 `reject`。分量范围虽已由 `intComponent` 守死，
+    // 但显式声明可防止后续放宽范围时再次掉进 `constrain` 的静默规整。
+    return wrap(
+      'time',
+      T.PlainTime.from({ hour, minute, second }, { overflow: 'reject' }),
+      undefined,
+      zone,
+    );
   } catch {
     throw temporalValueError(fnName, {
       component: `time(${hour}, ${minute}, ${second})`,
@@ -1457,4 +1479,365 @@ export function dateTimeValue(s: string): FeelTemporal | null {
 export function durationValue(s: string): FeelTemporal | null {
   const v = durationFromText(s);
   return isTemporal(v) ? v : null;
+}
+
+// ---------- ★ JS 侧值桥（宿主在自己的代码里用，不是 FEEL 内置函数） ----------
+
+/**
+ * ★ 这一段是**另一层**，别和 FEEL 内置函数混为一谈：
+ * 表达式里的 `date("…")` / `now()` 是**内置函数**（106 个规范名内，早已可用）；
+ * 这一段是给**宿主 JS 代码**用的 —— 直接构造 / 解析 / 运算 FEEL 时态值，
+ * 典型用途是把 `new Date()` 这类宿主值转成能塞进 `context` 的 FEEL 值。
+ *
+ * 形态对标 `feelin` 的 `./temporal` 导出面。唯一差异：**本包的时间值是数据对象**
+ * （`{__feelTemporal, kind, iso, raw, …}`）而不是类，所以分量用**函数**读（`year(v)`）
+ * 而不是 `v.year` —— 把值改成类会牵动 `eqKey` / `identity` / 比较 / JSON 序列化，
+ * 风险与收益不成比例。
+ */
+
+/** 收窄：任意输入 → 时间值（不是则 `null`） */
+function asFeelTemporal(v: unknown): FeelTemporal | null {
+  return isTemporal(v as Value) ? (v as FeelTemporal) : null;
+}
+
+/** 收窄：任意输入 → 时长值 */
+function asDuration(v: unknown): FeelTemporal | null {
+  const t = asFeelTemporal(v);
+  return t && t.kind === 'duration' ? t : null;
+}
+
+/**
+ * **值桥**：把宿主侧的值转成 FEEL 值。
+ *
+ * - 已是 FEEL 时间值 → 原样返回；
+ * - `Date`（含 `Temporal.Instant`）→ **date and time，按 UTC 记**（`Date` 本质是瞬时点，
+ *   取本地会随部署机器的时区漂移，是最常见的静默 bug 源）；
+ * - 原生 / polyfill 的 `Temporal.*` 实例 → 按其 `Symbol.toStringTag` 分派，
+ *   一律**经文本重建**（保证落在 Q32 规定的唯一实现源上，不把两套构造器混进内部）；
+ * - 其余（数字、字符串、普通对象…）→ **原样透传**（桥不制造新失败，也不静默吞掉类型错误）。
+ */
+export function toFeel(value: unknown): Value {
+  if (isTemporal(value as Value)) return value as Value;
+  const T = getTemporal();
+  if (!T) return value as Value;
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) return null;
+    try {
+      return temporalFromText('dateTime', value.toISOString());
+    } catch {
+      return null;
+    }
+  }
+  const tag = (value as any)?.[Symbol.toStringTag];
+  if (typeof tag === 'string' && tag.startsWith('Temporal.')) {
+    try {
+      switch (tag) {
+        case 'Temporal.PlainDate':
+          return temporalFromText('date', String(value));
+        case 'Temporal.PlainTime':
+          return temporalFromText('time', String(value));
+        case 'Temporal.PlainDateTime':
+        case 'Temporal.Instant':
+          return temporalFromText('dateTime', String(value));
+        case 'Temporal.ZonedDateTime':
+          // `2020-06-01T10:30:00+09:00[Asia/Tokyo]` → 剥掉方括号，按偏移记（同一瞬时）
+          return temporalFromText('dateTime', String(value).replace(/\[[^\]]+\]$/, ''));
+        case 'Temporal.Duration': {
+          const d = value as any;
+          const noDt =
+            !d.days &&
+            !d.hours &&
+            !d.minutes &&
+            !d.seconds &&
+            !d.milliseconds &&
+            !d.microseconds &&
+            !d.nanoseconds;
+          if (noDt) {
+            // 纯年月时长必须保住类别：`PT0S` 在 FEEL 里是**另一个类型**（`P0M` ≠ `PT0S`）
+            const y = Math.abs(d.years ?? 0);
+            const mo = Math.abs(d.months ?? 0);
+            let text = `P${y ? `${y}Y` : ''}${mo ? `${mo}M` : ''}`;
+            if (text === 'P') text = 'P0M';
+            return durationFromText((d.sign ?? 1) < 0 ? `-${text}` : text);
+          }
+          return durationFromText(String(value));
+        }
+        default:
+          return value as Value;
+      }
+    } catch {
+      return null;
+    }
+  }
+  return value as Value;
+}
+
+/** 四个细类判定（主入口的 `isTemporal` 只分「是不是时间值」） */
+export function isDate(v: unknown): boolean {
+  const t = asFeelTemporal(v);
+  return t !== null && t.kind === 'date';
+}
+export function isTime(v: unknown): boolean {
+  const t = asFeelTemporal(v);
+  return t !== null && t.kind === 'time';
+}
+export function isDateTime(v: unknown): boolean {
+  const t = asFeelTemporal(v);
+  return t !== null && t.kind === 'dateTime';
+}
+export function isDuration(v: unknown): boolean {
+  return asDuration(v) !== null;
+}
+
+/** 是否带时区信息（偏移或时区名任一） */
+export function isZoned(v: unknown): boolean {
+  const t = asFeelTemporal(v);
+  if (!t) return false;
+  const z = parseZone(t.iso);
+  return Boolean(z.zone || z.offset);
+}
+
+/**
+ * 两个时区标记是否**同一时区`（供 `is()` 的严格口径用）。
+ * 固定偏移按偏移比（`Z` ≡ `+00:00`），命名时区只按名字 —— 与 `identityOf` 同口径。
+ */
+export function zoneEquals(a?: string | null, b?: string | null): boolean {
+  return zoneToken(parseZone(a ?? undefined)) === zoneToken(parseZone(b ?? undefined));
+}
+
+/** 拿到底层实现源对象（`Temporal.*`）。这是逃生口：拿到它即脱离 FEEL 语义，请自行负责 */
+export function unwrap(v: unknown): unknown {
+  const t = asFeelTemporal(v);
+  return t ? t.raw : null;
+}
+
+// ---------- 分量读取（函数是形态，见本节头注释） ----------
+
+function fieldOf(v: unknown, name: string, kinds: readonly FeelTemporal['kind'][]): number | null {
+  const t = asFeelTemporal(v);
+  if (!t || !kinds.includes(t.kind)) return null;
+  const x = (t.raw as Record<string, unknown> | null)?.[name];
+  return typeof x === 'number' ? x : null;
+}
+
+export function year(v: unknown): number | null {
+  return fieldOf(v, 'year', ['date', 'dateTime']);
+}
+export function month(v: unknown): number | null {
+  return fieldOf(v, 'month', ['date', 'dateTime']);
+}
+export function day(v: unknown): number | null {
+  return fieldOf(v, 'day', ['date', 'dateTime']);
+}
+export function hour(v: unknown): number | null {
+  return fieldOf(v, 'hour', ['time', 'dateTime']);
+}
+export function minute(v: unknown): number | null {
+  return fieldOf(v, 'minute', ['time', 'dateTime']);
+}
+export function second(v: unknown): number | null {
+  return fieldOf(v, 'second', ['time', 'dateTime']);
+}
+/** 星期（Temporal 口径：**1 = 周一 … 7 = 周日**）。FEEL 的 `day of week` 给的是名字字符串 */
+export function dayOfWeek(v: unknown): number | null {
+  return fieldOf(v, 'dayOfWeek', ['date', 'dateTime']);
+}
+/** 时区名；无时区（本地时间）→ `null` */
+export function timezone(v: unknown): string | null {
+  const z = timezoneOf(v as Value);
+  return typeof z === 'string' ? z : null;
+}
+/** UTC 偏移（时长值）；无偏移 → `null`（`Z` 视为 `PT0S`） */
+export function timeOffset(v: unknown): FeelTemporal | null {
+  return asDuration(timeOffsetOf(v as Value));
+}
+
+/**
+ * 时长分量。**跨类访问返回 `null`**（unknown，对齐规范）：
+ * `days` / `hours` / … 只属于 days and time duration，`years` / `months` 只属于 years and months duration。
+ */
+function durationField(v: unknown, name: string, dtOnly: boolean): number | null {
+  const t = asDuration(v);
+  if (!t) return null;
+  if (dtOnly !== (durationKindOf(t) === 'days and time duration')) return null;
+  const x = (t.raw as Record<string, unknown> | null)?.[name];
+  return typeof x === 'number' ? x : null;
+}
+export function years(v: unknown): number | null {
+  return durationField(v, 'years', false);
+}
+export function months(v: unknown): number | null {
+  return durationField(v, 'months', false);
+}
+export function days(v: unknown): number | null {
+  return durationField(v, 'days', true);
+}
+export function hours(v: unknown): number | null {
+  return durationField(v, 'hours', true);
+}
+export function minutes(v: unknown): number | null {
+  return durationField(v, 'minutes', true);
+}
+export function seconds(v: unknown): number | null {
+  return durationField(v, 'seconds', true);
+}
+
+// ---------- 构造（JS 侧入口；与表达式内的 `date()` 等同一套实现） ----------
+
+export function date(text: string): FeelTemporal | null {
+  return asFeelTemporal(temporalFromText('date', text));
+}
+export function time(text: string): FeelTemporal | null {
+  return asFeelTemporal(temporalFromText('time', text));
+}
+export function dateAndTime(text: string): FeelTemporal | null {
+  return asFeelTemporal(temporalFromText('dateTime', text));
+}
+/** 数字按**秒**解释（`PTnS`）—— ISO 8601 时长没有裸数字形态，这是本包选的约定 */
+export function duration(spec: string | number): FeelTemporal | null {
+  const text =
+    typeof spec === 'number'
+      ? `${spec < 0 ? '-' : ''}PT${Math.abs(Math.trunc(spec))}S`
+      : spec;
+  return asDuration(durationFromText(text));
+}
+/** 由年月日构造 `date`；构不出（如 2 月 30 日）→ `null`，不抛 */
+export function dateFrom(y: number, m: number, d: number): FeelTemporal | null {
+  try {
+    return asFeelTemporal(dateOfComponents(y, m, d, 'date'));
+  } catch {
+    return null;
+  }
+}
+/** 由时分秒（+可选偏移时长）构造 `time` */
+export function timeFrom(
+  h: number,
+  m: number,
+  s: number,
+  offset?: FeelTemporal | null,
+): FeelTemporal | null {
+  try {
+    return asFeelTemporal(timeOfComponents(h, m, s, offset ?? null, 'time'));
+  } catch {
+    return null;
+  }
+}
+/** 取日期部分（date-time → date；date → 原样） */
+export function dateOfValue(v: unknown): FeelTemporal | null {
+  return asFeelTemporal(dateOf(v as Value));
+}
+/** 取时间部分（date → `00:00:00Z`；date-time → 带它自己的偏移/时区） */
+export function timeOfValue(v: unknown): FeelTemporal | null {
+  return asFeelTemporal(timeOf(v as Value));
+}
+/** 组合：`date` + `time` → `date and time`（偏移/时区取 time 一侧） */
+export function combine(d: unknown, t: unknown): FeelTemporal | null {
+  try {
+    return asFeelTemporal(combineDateTime(d as Value, t as Value, 'date and time'));
+  } catch {
+    return null;
+  }
+}
+/** 当前时刻 / 今天（可注入 `clock`，与表达式内的 `now()` / `today()` 同一口径） */
+export function now(clock?: () => Date): FeelTemporal | null {
+  return asFeelTemporal(evaluateTemporal('now()', {}, clock ? { clock } : {}).value);
+}
+export function today(clock?: () => Date): FeelTemporal | null {
+  return asFeelTemporal(evaluateTemporal('today()', {}, clock ? { clock } : {}).value);
+}
+
+// ---------- 运算（JS 侧；与表达式内的 `±` 同一套实现） ----------
+
+/** 时间值 ± 时长（`sign = 1` 加、`-1` 减） */
+export function addDuration(
+  temporal: unknown,
+  dur: unknown,
+  sign: 1 | -1 = 1,
+): FeelTemporal | null {
+  const base = asFeelTemporal(temporal);
+  const d = asDuration(dur);
+  if (!base || !d || base.kind === 'duration') return null;
+  return asFeelTemporal(shiftByDuration(base, d, sign));
+}
+
+/** 两个**同类**时间值相减 → 时长（`date-date` 按天、`time-time` 按小时、date-time 按天） */
+export function subtractTemporals(a: unknown, b: unknown): FeelTemporal | null {
+  const x = asFeelTemporal(a);
+  const y = asFeelTemporal(b);
+  if (!x || !y || x.kind !== y.kind || x.kind === 'duration') return null;
+  try {
+    const rx = x.raw as any;
+    const ry = y.raw as any;
+    // `a - b` = 从 b 走到 a：`b.until(a)`。方向写反会整体变号（`P1D` ↔ `-P1D`）。
+    const largestUnit = x.kind === 'time' ? 'hours' : 'days';
+    const d = ry.until(rx, { largestUnit });
+    return asDuration(durationFromText(String(d)));
+  } catch {
+    return null;
+  }
+}
+
+/** 两个**同类**时长相加/相减；年月类与日时类混算 → `null`（FEEL 未定义） */
+export function addDurations(a: unknown, b: unknown, sign: 1 | -1 = 1): FeelTemporal | null {
+  const x = asDuration(a);
+  const y = asDuration(b);
+  if (!x || !y || durationKindOf(x) !== durationKindOf(y)) return null;
+  try {
+    const rx = x.raw as any;
+    const next = sign === 1 ? rx.add(y.raw) : rx.subtract(y.raw);
+    return asDuration(wrap('duration', next));
+  } catch {
+    return null;
+  }
+}
+
+/** 时长的绝对值 */
+export function absDuration(d: unknown): FeelTemporal | null {
+  const t = asDuration(d);
+  if (!t) return null;
+  try {
+    return asDuration(wrap('duration', (t.raw as any).abs()));
+  } catch {
+    return null;
+  }
+}
+
+/** 两个时长是否相等（只比**总量**、两类互不相等 —— 与 `=` 同口径） */
+export function durationEquals(a: unknown, b: unknown): boolean {
+  const x = asDuration(a);
+  const y = asDuration(b);
+  if (!x || !y) return false;
+  return x.eqKey === y.eqKey;
+}
+
+/**
+ * 转成**可比较数**（排序用）：日期按「距 1970-01-01 的天数」、时间按日内秒、
+ * 日期时间按瞬时秒（无偏移/时区者按本地字段折算）、时长按 `order`。
+ * 拿不到绝对位置 → `null`（此时请用 `core` 的 `compareValues`）。
+ */
+export function toComparable(v: unknown): number | null {
+  const t = asFeelTemporal(v);
+  if (!t) return null;
+  if (t.kind === 'duration') return t.order ?? null;
+  const T = getTemporal();
+  if (!T) return null;
+  try {
+    if (t.kind === 'date') {
+      return Number(T.PlainDate.from('1970-01-01').until(t.raw, { largestUnit: 'days' }).days);
+    }
+    if (t.kind === 'time') {
+      const r = t.raw as Record<string, number>;
+      return (r.hour ?? 0) * 3600 + (r.minute ?? 0) * 60 + (r.second ?? 0);
+    }
+    const rx = t.raw as { epochNanoseconds?: bigint };
+    if (typeof rx?.epochNanoseconds === 'bigint') {
+      return Number(rx.epochNanoseconds / 1000000000n);
+    }
+    const local = T.PlainDateTime.from(t.iso.replace(/(Z|[+-]\d{2}:?\d{2}|@.+)$/, ''));
+    return Number(
+      T.PlainDateTime.from('1970-01-01T00:00:00').until(local, { largestUnit: 'seconds' }).seconds,
+    );
+  } catch {
+    return null;
+  }
 }

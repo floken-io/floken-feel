@@ -301,6 +301,12 @@ describe('floken-feel · TCK 修复回归 · 时间构造器重载与写法（11
       'date("2012/12/25")', // 分隔符
       'date(2017, 13, 31)',
       'date(2017, -8, 2)',
+      // 月内天数溢出：Temporal 对象分量的 overflow 默认 `constrain` 会静默规整成 2-29 / 2-28，
+      // 与字符串路径 `date("2020-02-30")`、扩展年路径 `date(999999999, 2, 30)` 的 null 自相矛盾，
+      // 也与 feelin 的 `INVALID_ARGUMENTS` 不一致 → 已强制 `overflow: 'reject'`。
+      'date(2020, 2, 30)',
+      'date(2021, 2, 29)', // 平年没有 2 月 29 日
+      'date(2020, 4, 31)', // 4 月只有 30 天
       'date(null, 2, 1)',
       'date(1)',
       'date([])',

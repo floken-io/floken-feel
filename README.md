@@ -187,7 +187,44 @@ S-FEEL 白名单越界 / 语法错 / 资源上限。
 **裁判规则（怎么算相等）写死在 `tooling/tck/README.md`** —— 官方规范了输入输出却没有规范判定，这一层必须自己公开写死。
 语料**不随包分发**（DMN TCK 的 test cases 是 CC BY-SA，Share-Alike 有传染性），由 `check:tck-isolation` 门禁强制。
 
+---
 
+## 1.4 JS 侧时态 API（`./temporal` 的值桥）
+
+> **先分清两层**：表达式里的 `date("…")` / `now()` / `today()` 是 **FEEL 内置函数**（106 个规范名内，早已可用）；
+> 本节是**另一层** —— 给你的 **JS 代码**用的：直接构造 / 解析 / 运算 FEEL 时态值（对标 `feelin` 的 `./temporal` 导出面）。
+
+**典型用途**：把 `new Date()` 转成能塞进 `context` 的 FEEL 值。不转的话它会被当成普通对象，
+比较结果是 `null` **且没有诊断**（跨类型排序比较的规范行为）—— 这是最容易踩的静默坑。
+
+```ts
+import { toFeel, evaluateTemporal } from 'floken-feel/temporal';
+
+const x = toFeel(new Date('2020-06-01T00:00:00Z')); // → date and time，按 UTC 记
+evaluateTemporal('x > date and time("2020-01-01T00:00:00Z")', { x }); // → { value: true, … }
+```
+
+| 类别 | API |
+|---|---|
+| **值桥** | `toFeel(v)` —— `Date` → date and time（**按 UTC 记**，避免随部署机器时区漂移）；`Temporal.*` 实例按 `Symbol.toStringTag` 分派；已是 FEEL 值 → 原样返回；其余**原样透传**（桥不制造新失败） |
+| **判定** | `isDate` `isTime` `isDateTime` `isDuration` `isZoned` `zoneEquals` |
+| **分量** | `year` `month` `day` `hour` `minute` `second` `dayOfWeek`（**1 = 周一**）`timezone` `timeOffset` |
+| **时长分量** | `years` `months` 只属 **years and months duration**；`days` `hours` `minutes` `seconds` 只属 **days and time duration**；**跨类访问 → `null`**（规范口径） |
+| **构造** | `date` `time` `dateAndTime` `duration`（数字按**秒**解释）`dateFrom` `timeFrom` `dateOfValue` `timeOfValue` `combine` `now` `today`（后两者可注入 `clock`） |
+| **运算** | `addDuration` `subtractTemporals` `addDurations` `absDuration` `durationEquals` `toComparable` |
+| **逃生口** | `unwrap(v)` → 底层 `Temporal.*` 对象 |
+
+> ⚠️ **与 `feelin` 的形态差异**：本包的时态值是**数据对象**（`{__feelTemporal, kind, iso, raw, …}`）而不是类，
+> 所以分量用**函数**读（`year(v)`）而不是 `v.year`。把值改成类会牵动 `eqKey` / `identity` / 比较 / JSON 序列化，
+> 风险与收益不成比例；要读底层对象请用 `unwrap(v)`。
+
+> ⚠️ **分量构造不规整**：`dateFrom(y, m, d)` / `timeFrom(h, m, s)` 对「月内没有这一天」返回 `null`，
+> **不会**把 `2020-02-30` 规整成 `2020-02-29`（Temporal 对象分量的 overflow 默认是 `constrain`，
+> 本包已强制 `reject`）。这与表达式内 `date(2020, 2, 30)`、字符串路径 `date("2020-02-30")` 及 `feelin` 一致。
+> 反例：`date("2020-01-31") + duration("P1M")` → `2020-02-29` **照旧规整** —— 加法溢出是另一种语义，
+> TCK 有覆盖，不可一并改。
+
+---
 
 ## 2. 四档订阅（subpath exports）
 
@@ -195,7 +232,7 @@ S-FEEL 白名单越界 / 语法错 / 资源上限。
 |---|---|---|
 | `.` core | engine / dmn | parse + 求值 + 三值逻辑 + 内置函数（**无时态**） |
 | `./unary-tests` | engine 网关 / dmn 输入格 | unary tests（S-FEEL），`?` 为被测输入 |
-| `./temporal` | dmn（CL3）/ 按需 | date/time/duration + 动态加载 polyfill |
+| `./temporal` | dmn（CL3）/ 按需 | date/time/duration + 动态加载 polyfill + **JS 侧值桥（`toFeel` 一族，见 §1.4）** |
 | `./editor` | designer | 解析 + AST + 诊断 + **语法着色**（**不含求值器/内置函数库**） |
 
 ```ts
