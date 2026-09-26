@@ -269,12 +269,20 @@ export function isScalar(v: Value): v is boolean | number | string {
   return typeof v === 'boolean' || typeof v === 'number' || typeof v === 'string';
 }
 
-/** 把宿主传入的 JS 函数包装成 FeelFunction 值 */
+/**
+ * 把宿主传入的 JS 函数包装成 FeelFunction 值。
+ *
+ * ★ `params` 是**形参名表**，命名调用（`f(a: 1)`）靠它对位。宿主函数本来没有形参名，
+ *   但决策服务 / BKM 有 —— `decisionService_012(decision_012_3: "C", …)` 这类调用
+ *   不知形参名就只能判「不支持命名参数」而返回 null（TCK 0085#009/#012）。
+ */
 export function toFeelFunction(
   name: string,
   fn: (...args: Value[]) => Value,
+  params?: readonly string[],
 ): FeelFunction {
-  return { __feelFunction: true, name, call: (args) => fn(...args) };
+  const base: FeelFunction = { __feelFunction: true, name, call: (args) => fn(...args) };
+  return params === undefined ? base : { ...base, params };
 }
 
 /** 直接以 (args, ctx) 形态构造 FEEL 函数值（供函数字面量/闭包使用） */

@@ -88,5 +88,6 @@ export type {
   FeelTemporal,
   NativeFn,
   Node,
+  TypeSpec,
   Value,
 } from '../core/types.js';

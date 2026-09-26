@@ -404,13 +404,23 @@ const NULL_NODE: Node = { type: 'lit', value: null, start: 0, end: 0 };
  * 3. 未给到的形参补 `null` 占位，**抛不抛由函数自己决定**
  *    （`is(value1: X)` 缺 value2 → false；`round down(scale: 0)` 缺 n → 抛）。
  */
+/**
+ * 命名参数 → 按形参名对位。
+ *
+ * ◆ **形参名表的两个来源**：
+ *   ① 内置函数的静态表 `paramNamesOf`（`function-params.ts`）；
+ *   ② **被调者自己挂的** `FeelFunction.params` —— 宿主注入的函数（决策服务 / BKM）
+ *      不在静态表里，只有它能自报形参名。二者缺一就只能判「不支持命名参数」，
+ *      于是 `decisionService_012(decision_012_3: "C", …)` 恒为 null（TCK 0085#009/#012）。
+ */
 function reorderNamedArgs(
   fnName: string | null,
   names: readonly (string | null)[],
   args: Node[],
+  fnParams?: readonly string[],
 ): { nodes: Node[]; used: (string | null)[] } {
   if (fnName === null) throw namedArgError('unsupported', 'expression');
-  const params = paramNamesOf(fnName);
+  const params = paramNamesOf(fnName) ?? fnParams ?? null;
   if (!params) throw namedArgError('unsupported', fnName);
 
   const out: (Node | null)[] = new Array<Node | null>(params.length).fill(null);
@@ -827,6 +837,8 @@ export function evaluateNode(
       let fnName: string | null = null;
       /** 被调者的实际类型（用于「不可调用」报错） */
       let calleeType = 'null';
+      /** 被调者自报的形参名（宿主函数：决策服务 / BKM；内置函数在静态表里） */
+      let fnParams: readonly string[] | undefined;
 
       if (node.callee.type === 'name') {
         const name = node.callee.name;
@@ -840,6 +852,7 @@ export function evaluateNode(
           if (isFunction(v)) {
             fn = v.call;
             fnName = v.name || name;
+            fnParams = v.params;
           } else if (TEMPORAL_FUNCTIONS.has(name)) {
             // 能力未加载 → **抛**，不静默返回 null（AC-F7）
             throw temporalNotLoaded(name);
@@ -852,6 +865,7 @@ export function evaluateNode(
         if (isFunction(v)) {
           fn = v.call;
           fnName = v.name || node.callee.name;
+          fnParams = v.params;
         }
       } else {
         // 任意表达式作被调者：`(function(a, b) a + b)(1, 2)`、`f().g` 等
@@ -860,6 +874,7 @@ export function evaluateNode(
         if (isFunction(v)) {
           fn = v.call;
           fnName = v.name || null;
+          fnParams = v.params;
         }
       }
 
@@ -898,7 +913,7 @@ export function evaluateNode(
       try {
         // 命名参数 → 先按形参名表对位（DMN 1.4 §10.3.2），再逐项求值
         const reordered = node.argNames
-          ? reorderNamedArgs(fnName, node.argNames, node.args)
+          ? reorderNamedArgs(fnName, node.argNames, node.args, fnParams)
           : null;
         const argNodes = reordered ? reordered.nodes : node.args;
         const args = argNodes.map((a) => evaluateNode(a, ctx, warnings, builtins, runtime));
