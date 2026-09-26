@@ -60,6 +60,28 @@ const NAME_INNER_KEYWORDS: ReadonlySet<string> = new Set([
   'function',
 ]);
 
+/**
+ * ★ 只有在**作用域里确实存在这个长名**时才允许被吸收的关键字。
+ *
+ * 与上面那批的区别：`of` / `not` / `if` / ... 夹在两个名字之间时**没有第二种读法**
+ * （`a of b` 本身是语法错），可以无条件吸收；而这批是**连接符**，两边都能接合法表达式
+ * —— `x in y`、`a and b`、`for i in x return y` —— 所以只能"合出来的整体确实是作用域里
+ * 的一个名字"时才合，否则必须保持关键字身份。
+ *
+ * 判据 = DMN 1.5 §10.3.1.1 的 "the longest name matched in scope"。
+ *
+ * 证据（TCK 语料里真实存在的多词决策/输入名，不是臆造）：
+ *   `days in weekend`（0084，表达式 `for i in days in weekend return ...`）、
+ *   `values in a list`、`From Date To Date and Time`、`Compare Years and Months Duration`、
+ *   `Another Date and Time`、`Compare Date and Time`。
+ * 不放开 `in` 的话 `days in weekend` 会被读成 `days in weekend`（in 运算），
+ * 0084 decision_014 只得 `[false]` 而非 `[false, true]`。
+ *
+ * ⚠️ 只列语料里确有需要的。`instance` / `then` / `else` / `return` / `satisfies` /
+ *   `between` 一个都没出现，暂不放开，避免扩大攻击面。
+ */
+const SCOPE_ONLY_KEYWORDS: ReadonlySet<string> = new Set(['in', 'and', 'or']);
+
 /** 名字尾部可吸收的数字（`decision A 2.1` / `Extra days case 1`，见文件头 ★） */
 function isTrailingNum(t: Token | undefined): boolean {
   return t?.type === 'num';
@@ -70,17 +92,34 @@ function adjacent(a: Token | undefined, b: Token | undefined): boolean {
   return !!a && !!b && a.end === b.start;
 }
 
+/** `growOnce` 的两个开关：`hyphen` 连字符段、`connectors` 连接符关键字（见 `SCOPE_ONLY_KEYWORDS`） */
+interface GrowOpts {
+  hyphen: boolean;
+  connectors: boolean;
+}
+
+/** 该关键字能否被吸收：`NAME_INNER_KEYWORDS` 无条件，连接符需 `connectors` 打开 */
+function isInnerKw(t: Token | undefined, connectors: boolean): boolean {
+  const v = val(t);
+  return NAME_INNER_KEYWORDS.has(v) || (connectors && SCOPE_ONLY_KEYWORDS.has(v));
+}
+
+/** 两个开关都关：只做无条件安全的合并（空格段 + 尾随数字 + `of` 那批关键字） */
+const SAFE: GrowOpts = { hyphen: false, connectors: false };
+const HYPHEN: GrowOpts = { hyphen: true, connectors: false };
+const ALL: GrowOpts = { hyphen: true, connectors: true };
+
 /**
  * 从 `i` 起贪心地把名字加长，返回合并后的「末下标 + 文本」。
  *
  * 每段可以是：一个 `name`、一个可夹在名字中间的关键字、一个尾随数字，
- * 或一个**紧邻**的 `-` + 名字（`Date-Time`，仅 `allowHyphen` 时）。
+ * 或一个**紧邻**的 `-` + 名字（`Date-Time`，仅 `hyphen` 时）。
  *
  * ★ 为什么空格段**无条件**合并：`start position`、`end included`、`b c`、
  *   `Mike's daughter` 都**没有第二种读法** —— 两个值之间没有运算符本就是语法错。
- *   只有 `-` 是真的两义（`Date-Time` 是名字，`Rn-Kn` 是相减），故单独开关。
+ *   只有 `-` 和连接符（`in` / `and` / `or`）是真的两义，故分别开关。
  */
-function growOnce(tokens: Token[], i: number, allowHyphen: boolean): { end: number; text: string } {
+function growOnce(tokens: Token[], i: number, opts: GrowOpts): { end: number; text: string } {
   let j = i;
   let text = val(tokens[i]);
   for (;;) {
@@ -96,12 +135,12 @@ function growOnce(tokens: Token[], i: number, allowHyphen: boolean): { end: numb
       text += ` ${val(next)}`;
       continue;
     }
-    if (next?.type === 'kw' && NAME_INNER_KEYWORDS.has(val(next)) && (isPlainName(after) || isTrailingNum(after))) {
+    if (next?.type === 'kw' && isInnerKw(next, opts.connectors) && (isPlainName(after) || isTrailingNum(after))) {
       j += 2;
       text += ` ${val(next)} ${val(after)}`;
       continue;
     }
-    if (allowHyphen && next?.type === 'op' && val(next) === '-' && adjacent(tokens[j], next) && isPlainName(after)) {
+    if (opts.hyphen && next?.type === 'op' && val(next) === '-' && adjacent(tokens[j], next) && isPlainName(after)) {
       j += 2;
       text += `-${val(after)}`;
       continue;
@@ -166,9 +205,9 @@ export function mergeNames(
 
     // 规则 2：通用名字合并（相邻 name / 夹在中间的关键字 / 尾随数字）
     if (isPlainName(t)) {
-      const safe = growOnce(tokens, i, false);
+      const safe = growOnce(tokens, i, SAFE);
       /*
-       * ★ 只有**跨连字符**的那一段才需要查作用域（DMN 1.5 §10.3.1.1 的
+       * ★ 连字符段（`Date-Time`）沿用原口径（DMN 1.5 §10.3.1.1 的
        *   "the longest name matched in scope"）：
        *   - `Date-Time` 在作用域里 → 是一个名字（TCK 0007）；
        *   - `Rn-Kn` 不在 → 是相减（TCK 0035 的 `(1-Rn-Kn) / (1-Kn)`）。
@@ -178,8 +217,16 @@ export function mergeNames(
        *   `end`），于是区间属性整组塌掉。空格段没有第二种读法，照旧合并。
        */
       let chosen = safe;
-      const full = growOnce(tokens, i, true);
-      if (full.end > safe.end && (!knownNames || knownNames.has(full.text))) chosen = full;
+      const hyph = growOnce(tokens, i, HYPHEN);
+      if (hyph.end > safe.end && (!knownNames || knownNames.has(hyph.text))) chosen = hyph;
+      /*
+       * ★ 连接符段（`in` / `and` / `or`）**必须**有作用域且**整体命中**才合 ——
+       *   没有 `knownNames` 时一律不合，否则 `x in y`、`a and b` 会被整段吞成名字。
+       */
+      if (knownNames) {
+        const conn = growOnce(tokens, i, ALL);
+        if (conn.end > chosen.end && knownNames.has(conn.text)) chosen = conn;
+      }
       if (chosen.end > i) {
         const last = tokens[chosen.end];
         out.push({
