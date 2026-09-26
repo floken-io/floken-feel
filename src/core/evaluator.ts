@@ -10,7 +10,13 @@
 
 import { parseExpression, parseUnaryTests } from './parser.js';
 import { BUILTINS } from '../builtins/registry.js';
-import { TEMPORAL_FUNCTIONS, TEMPORAL_PROPERTIES, TEMPORAL_UNARY_MINUS } from './deferred.js';
+import {
+  TEMPORAL_FUNCTIONS,
+  TEMPORAL_PROPERTIES,
+  TEMPORAL_SCALE,
+  TEMPORAL_SUBTRACT,
+  TEMPORAL_UNARY_MINUS,
+} from './deferred.js';
 import {
   argTypeError,
   FEEL_DIAGNOSTIC_CODES,
@@ -354,6 +360,11 @@ const PARAM_ERROR_CODES = new Set<string>([
 function num(v: Value, rt: FeelEvalRuntime | undefined): number | null {
   if (rt?.strict && typeof v === 'string') return null;
   return toNumber(v);
+}
+
+/** 是否是 FEEL duration（days and time / years and months 两类都算） */
+function isDuration(v: Value): boolean {
+  return isTemporal(v) && v.kind === 'duration';
 }
 
 /**
@@ -935,13 +946,60 @@ export function evaluateNode(
       const lv = evaluateNode(node.left, ctx, warnings, builtins, runtime);
       const rv = evaluateNode(node.right, ctx, warnings, builtins, runtime);
       /*
-       * 时间算术（`date ± duration`，DMN 1.4 §10.3.2.4）：只要有一侧是时间值，
-       * 先交给值上的钩子（`FeelTemporal.plus`，由 `./temporal` 档挂上）。
+       * 时间算术（`date ± duration`、`duration ×÷ number`，DMN 1.4 §10.3.2.4 / 1.5 §10.3.2.3.4）：
+       * 只要有一侧是时间值，先交给值上的钩子 / 委托键（实现由 `./temporal` 档挂上）。
        * 钩子返回 `undefined` 表示"这不是它能管的算式" → 落回数字分支报类型不匹配。
        */
       if (isTemporal(lv) || isTemporal(rv)) {
         const shifted = shiftTemporal(node.op, lv, rv);
         if (shifted !== undefined) return shifted;
+        // ★ 乘除：duration 与标量的缩放语义（`-@` 的同族委托键 `*@`）。
+        //   只有**有 duration 参与**才走这条；其余（`date * 2`）落回数字分支报类型不匹配。
+        if ((node.op === '*' || node.op === '/') && (isDuration(lv) || isDuration(rv))) {
+          const impl = builtins[TEMPORAL_SCALE];
+          if (!impl) throw temporalNotLoaded(TEMPORAL_SCALE);
+          return impl([lv, rv, node.op], ctx, runtime);
+        }
+        /*
+         * ★ 两个**非 duration** 时间值相减（`date - date`、`time - time`、
+         * `dateTime - dateTime`）→ duration，走 `-@`/`*@` 的同族委托键 `--`。
+         * 必须在 `shiftTemporal` 之后：`date - duration` 那一档已由它处理掉了。
+         */
+        if (node.op === '-' && !(isDuration(lv) || isDuration(rv))) {
+          const impl = builtins[TEMPORAL_SUBTRACT];
+          if (!impl) throw temporalNotLoaded(TEMPORAL_SUBTRACT);
+          const d = impl([lv, rv], ctx, runtime);
+          if (d !== null) return d;
+        }
+      }
+      /*
+       * ★ **字符串加法**（DMN 1.5 §10.3.1.2 Addition）：`+` 是**唯一**对字符串有意义的算术运算符。
+       * 语义是拼接（算符表第二档）。
+       *
+       * ⚠️ 本分支必须在 `num()` 之前：`num()` 会把数字串隐式转成 number，
+       *    于是 `"1" + "2"` 会算成 3 而不是 `"12"`。
+       */
+      if (node.op === '+' && (typeof lv === 'string' || typeof rv === 'string')) {
+        // ② 两侧都是 string → 拼接
+        if (typeof lv === 'string' && typeof rv === 'string') return lv + rv;
+        /*
+         * ③ 混合（string + 非 string）：规范算符表里没有这一档。
+         *    按 §10.3.2 隐式转换，**先把 string 侧往 number 转** —— 转成则按数字加法
+         *    （`"1" + 1` = 2，与 `strictCoercion` 的宽容默认一致）；转不成才是 null + 诊断。
+         *
+         *    ⚠️ 不能反向把 number 转成 string 去拼（`"1" + 1` 会变成 `"11"`，
+         *    那是"吞类型错误返默认值"，AGENTS.md §5.6 四禁之一）。
+         */
+        const a = num(lv, runtime);
+        const b = num(rv, runtime);
+        if (a !== null && b !== null) return a + b;
+        diag(
+          warnings,
+          FEEL_DIAGNOSTIC_CODES.EVAL_TYPE_MISMATCH,
+          `Operator '+' requires numbers or strings on both sides`,
+          node,
+        );
+        return null;
       }
       const l = num(lv, runtime);
       const r = num(rv, runtime);

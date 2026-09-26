@@ -16,7 +16,7 @@ import { BUILTINS, registerBuiltin } from '../builtins/registry.js';
 import { NUMERIC_BUILTINS } from '../builtins/numeric.js';
 import { requireArity } from '../builtins/helpers.js';
 import { evaluate, type EvaluateOptions } from '../core/evaluator.js';
-import { TEMPORAL_UNARY_MINUS } from '../core/deferred.js';
+import { TEMPORAL_SCALE, TEMPORAL_SUBTRACT, TEMPORAL_UNARY_MINUS } from '../core/deferred.js';
 import {
   isTemporal,
   type EvalResult,
@@ -252,14 +252,23 @@ function wrap(
   // 可选字段按需挂（`exactOptionalPropertyTypes` 下不能显式写 undefined）
   const order = orderOf(kind, obj, iso);
   const withOrder: FeelTemporal = order === undefined ? base : { ...base, order };
-  const withPlus: FeelTemporal = { ...withOrder, plus: (d, sign) => shiftByDuration(withOrder, d, sign) };
+  /*
+   * ★ `plus` 闭包必须捕获**带 src 的那个对象**，不能捕获 `withOrder`。
+   *
+   * `src` 在最后一步才挂上，而 `shiftByDuration` 靠 `base.src` 反解 UTC offset
+   * （`parseZone(base.src)`）—— 用 `withOrder` 会让
+   * `dateTime("…+11:00") + duration("P1M")` 丢掉 `+11:00`
+   * （TCK 0100-arithmetic 一整片用例挂在这一点上）。
+   */
+  const self: FeelTemporal = src === undefined ? withOrder : { ...withOrder, src };
+  const withPlus: FeelTemporal = { ...self, plus: (d, sign) => shiftByDuration(self, d, sign) };
   // 只有 `date` 有"下一天"这个自然步长（`date and time` / `time` / duration 没有，
   // 故 `for i in @d1..@d2` 对它们应当报错，TCK 0084#020/#021/#022）
   const withStep =
     kind === 'date'
       ? { ...withPlus, plusDays: (days: number) => shiftDays(withPlus, days) }
       : withPlus;
-  return src === undefined ? withStep : { ...withStep, src };
+  return withStep;
 }
 
 /**
@@ -285,8 +294,134 @@ function shiftDays(date: FeelTemporal, days: number): Value {
  * （故沿用基准值的 zone，而不是从新串里重解析）。
  * 组合不可表示（如 `PlainDate + PT1H`）时 Temporal 抛 `RangeError` → 转成 `null`。
  */
+/**
+ * ★ **两个同类时长按分量相加**（`sign = 1` 加、`-1` 减）。
+ *
+ * 为什么**不能**用 `Temporal.Duration.prototype.add`：
+ * 只要涉及 `years` / `months` / `weeks`，Temporal 一律要求 `relativeTo`
+ * （没有锚点就算不出"一月是多少天"），否则抛 `RangeError: Cannot use large units`。
+ * 而 FEEL 的语义恰恰是**不做任何归一化**的纯分量相加 ——
+ * `P1Y + P2M` 就是 `P1Y2M`，不是"14 个月"更不是某锚点下的天数。
+ * 故**先折成该量纲的最小单位总量**（年月 → 月，日时 → 纳秒）做加减，再一次性重建。
+ *
+ * ⚠️ 不能写成 `Duration.from({ days: 1, hours: -12 })`：Temporal **拒绝混合符号**
+ * （`Cannot mix duration signs`），而 `P1D - PT12H` 恰恰会产生这种中间形态。
+ */
+function combineDurations(a: FeelTemporal, b: FeelTemporal, sign: 1 | -1): FeelTemporal | null {
+  const T = getTemporal();
+  if (!T) return null;
+  const ra = a.raw as any;
+  const rb = b.raw as any;
+  try {
+    if (durationKindOf(a) === 'years and months duration') {
+      const months = totalMonths(ra) + sign * totalMonths(rb);
+      return wrap('duration', fromMonths(months));
+    }
+    const ns = totalNanos(ra) + BigInt(sign) * totalNanos(rb);
+    return wrap('duration', fromNanos(ns));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 总月数 → duration。
+ *
+ * ⚠️ `Duration.from({ months: 14 })` 输出的是 **`P14M`**，不会自动进位成 `P1Y2M`
+ * （Temporal 不做"12 个月 = 1 年"的隐式平衡），而 FEEL 规范串要的是 `P1Y2M`。
+ * 故自己拆分量；拆完两侧**同号**，避开 `Cannot mix duration signs`。
+ */
+function fromMonths(months: number): unknown {
+  const T = getTemporal();
+  const s = months < 0 ? -1 : 1;
+  const abs = Math.abs(months);
+  const years = Math.trunc(abs / 12);
+  return T.Duration.from({ years: years * s, months: (abs - years * 12) * s });
+}
+
+/** 总纳秒 → duration，按「天 → 时 → 分 → 秒 → 亚秒」逐级拆（拆完同号） */
+function fromNanos(ns: bigint): unknown {
+  const T = getTemporal();
+  const s = ns < 0n ? -1n : 1n;
+  let rem = ns < 0n ? -ns : ns;
+  const take = (unit: bigint): bigint => {
+    const q = rem / unit;
+    rem -= q * unit;
+    return q * s;
+  };
+  const days = take(86_400_000_000_000n);
+  const hours = take(3_600_000_000_000n);
+  const minutes = take(60_000_000_000n);
+  const seconds = take(1_000_000_000n);
+  const milliseconds = take(1_000_000n);
+  const microseconds = take(1_000n);
+  const nanoseconds = rem * s;
+  return T.Duration.from({
+    days: Number(days),
+    hours: Number(hours),
+    minutes: Number(minutes),
+    seconds: Number(seconds),
+    milliseconds: Number(milliseconds),
+    microseconds: Number(microseconds),
+    nanoseconds: Number(nanoseconds),
+  });
+}
+
+/** 年月类时长的**总月数**（`P1Y2M` → 14，`-P1Y` → -12） */
+function totalMonths(raw: any): number {
+  return (raw?.years ?? 0) * 12 + (raw?.months ?? 0);
+}
+
+/** 日时类时长的**总纳秒**（bigint，避免大时长丢精度） */
+function totalNanos(raw: any): bigint {
+  const n = (v: unknown): bigint => {
+    const x = typeof v === 'bigint' ? v : BigInt(Math.trunc(Number(v ?? 0)));
+    return x;
+  };
+  return (
+    n(raw?.days) * 86_400_000_000_000n +
+    n(raw?.hours) * 3_600_000_000_000n +
+    n(raw?.minutes) * 60_000_000_000n +
+    n(raw?.seconds) * 1_000_000_000n +
+    n(raw?.milliseconds) * 1_000_000n +
+    n(raw?.microseconds) * 1_000n +
+    n(raw?.nanoseconds)
+  );
+}
+
+/**
+ * 时间值 ± 时长。
+ *
+ * ★ `base` 自己也是 duration 时（`duration ± duration`）走**分量相加**
+ * （`combineDurations`），不走 `raw.add` —— 后者对年月量纲会抛 `Cannot use large units`。
+ */
 function shiftByDuration(base: FeelTemporal, dur: FeelTemporal, sign: 1 | -1): Value {
   if (!isTemporal(dur) || dur.kind !== 'duration') return null;
+  if (base.kind === 'duration') {
+    if (durationKindOf(base) !== durationKindOf(dur)) return null; // 跨量纲 → FEEL 未定义
+    return combineDurations(base, dur, sign);
+  }
+  /*
+   * ★ `date ± 日时类时长`（DMN 1.5 §10.3.1.3）：`date` 要先**升成当日 `00:00:00`** 再算，
+   * 算完取回 `date` 部分。
+   * 直接对 `PlainDate` 调 `subtract("PT1H")` 会抛（日时单位对纯日期无意义），
+   * 而 polyfill 的少数版本会**静默忽略**时间分量 —— 那更危险：
+   * `@"2021-01-02" - @"PT1H"` 应当是 `2021-01-01`（00:00 往回 1 小时落在前一天），
+   * 静默忽略会得到 `2021-01-02`。
+   */
+  if (base.kind === 'date' && durationKindOf(dur) === 'days and time duration') {
+    try {
+      const lifted = asFeelTemporal(temporalFromText('dateTime', `${base.iso}T00:00:00`));
+      if (!lifted) return null;
+      const lraw = lifted.raw as any;
+      const next = sign === 1 ? lraw.add(dur.raw) : lraw.subtract(dur.raw);
+      const back = typeof next?.toPlainDate === 'function' ? next.toPlainDate() : null;
+      if (back === null || back === undefined) return null;
+      return wrap('date', back);
+    } catch {
+      return null;
+    }
+  }
   const raw = base.raw as { add?: (d: unknown) => unknown; subtract?: (d: unknown) => unknown };
   const apply = sign === 1 ? raw?.add : raw?.subtract;
   if (typeof apply !== 'function') return null;
@@ -764,6 +899,23 @@ function parseText(kind: FeelTemporal['kind'], raw: string, fnName: string | nul
     }
   }
 
+  /*
+   * ★ ISO 8601 的 `24:00:00` 表示"当日结束"，等价于**次日零点**
+   * （TCK 0100-arithmetic#009/#010：`@"2021-01-01T24:00:00" + @"PT1S"` = `2021-01-02T00:00:01`）。
+   * Temporal 的构造器不接受 `24` 点，故先折成次日 `00:00:00` ——
+   * 不折的话整条字面量会被判成非法值，连加法都到不了。
+   */
+  if (kind !== 'time') {
+    const m24 = /^([+-]?\d+-\d{2}-\d{2})T24(?::00(?::00(?:[.,]\d+)?)?)?$/.exec(head);
+      if (m24) {
+        try {
+          head = `${normalizeYearText(String(T.PlainDate.from(m24[1]).add({ days: 1 })))}T00:00:00`;
+        } catch {
+          /* 折不动就交给下面的解析按非法值报错 */
+        }
+      }
+  }
+
   // 年份只对"看起来像日期"的串动手（`11:22:33` 这类不能被误判成年份）
   if (kind !== 'time' && /^-?\d+-\d{2}-\d{2}/.test(head)) {
     const conv = convertYear(head);
@@ -1192,6 +1344,88 @@ function atLiteralFn(): NativeFn {
  * 判据取规范串：出现 `D` 或 `T` 分量即为 `days and time duration`，
  * 否则是 `years and months duration`。
  */
+/**
+ * duration 折算成一个**标量**（同一量纲内可比可除）：
+ * - years and months → 总月数；
+ * - days and time → 总纳秒（★ FEEL 的 `days and time duration` 里 **1 day = 24h 固定**，
+ *   不随时区漂移 —— 与 `date and time` 上的日历运算不同，别用 `total({relativeTo})`）。
+ */
+function durationTotal(t: FeelTemporal): number {
+  const raw = t.raw as Record<string, number> | null;
+  if (!raw) return 0;
+  if (durationKindOf(t) === 'years and months duration') {
+    return (raw.years ?? 0) * 12 + (raw.months ?? 0);
+  }
+  const ns =
+    (raw.days ?? 0) * 86_400e9 +
+    (raw.hours ?? 0) * 3_600e9 +
+    (raw.minutes ?? 0) * 60e9 +
+    (raw.seconds ?? 0) * 1e9 +
+    (raw.milliseconds ?? 0) * 1e6 +
+    (raw.microseconds ?? 0) * 1e3 +
+    (raw.nanoseconds ?? 0);
+  // ISO 文本里的符号（`-P1D`）：raw 的分量是**带符号**的，但若整个时长为负需再取一次
+  return t.iso.startsWith('-') ? -Math.abs(ns) : ns;
+}
+
+/**
+ * `duration * number` / `duration / number`（DMN 1.5 §10.3.2.3.4）。
+ *
+ * 关键：**非整数倍要在量纲内平衡** —— `duration("P1D") * 2.5` = `P2DT12H`，
+ * 而不是"天 2.5"（Temporal 的分量不接受小数）。
+ */
+function scaleDuration(t: FeelTemporal, factor: number): FeelTemporal {
+  const T = getTemporal();
+  if (!T) return t;
+  if (!t.raw) return t;
+
+  /*
+   * ★ 全程在**带符号的总量**上算，最后再拆分量。
+   * 先取绝对值再乘会丢掉符号方向（`10 * @"-P1Y"` 会翻成正），
+   * 而且 `-2.5 * @"P1Y11M"` = -57.5 月要**向零截断**成 -57（= `-P4Y9M`），
+   * 不是四舍五入（-58 → `-P4Y10M`）。
+   */
+  const total = durationTotal(t) * factor;
+  if (!Number.isFinite(total)) return t;
+  const sign = total < 0 ? -1 : 1;
+  const abs = Math.abs(total);
+
+  if (durationKindOf(t) === 'years and months duration') {
+    const months = Math.trunc(abs);
+    const years = Math.trunc(months / 12);
+    const rest = months - years * 12;
+    try {
+      // ★ 零值必须**保留量纲**：Temporal 对零时长输出 `PT0S`，而 FEEL 期望 `P0M`
+      const isoText = months === 0 ? (sign < 0 ? '-P0M' : 'P0M') : undefined;
+      return wrap('duration', T.Duration.from({ years: years * sign, months: rest * sign }), undefined, undefined, isoText);
+    } catch {
+      return t;
+    }
+  }
+
+  let rest = abs;
+  const take = (unit: number): number => {
+    const n = Math.trunc(rest / unit);
+    rest -= n * unit;
+    return n * sign;
+  };
+  const days = take(86_400e9);
+  const hours = take(3_600e9);
+  const minutes = take(60e9);
+  const seconds = take(1e9);
+  const milliseconds = take(1e6);
+  const microseconds = take(1e3);
+  const nanoseconds = Math.trunc(rest) * sign;
+  try {
+    return wrap(
+      'duration',
+      T.Duration.from({ days, hours, minutes, seconds, milliseconds, microseconds, nanoseconds }),
+    );
+  } catch {
+    return t;
+  }
+}
+
 function durationKindOf(t: FeelTemporal): 'years and months duration' | 'days and time duration' {
   return /[DT]/.test(t.iso.replace(/^[-+]?P/, ''))
     ? 'days and time duration'
@@ -1338,6 +1572,57 @@ export const TEMPORAL_BUILTINS: Record<string, NativeFn> = {
    * `date` / `time` / `date and time` 取负**无定义** → 抛 `FEEL_EVAL_ARG_TYPE`
    * （不是静默 null：那是调用非法，不是值未知，见 `helpers.ts` 全局口径）。
    */
+  [TEMPORAL_SCALE]: (args) => {
+    const left = args[0] ?? null;
+    const right = args[1] ?? null;
+    const op = args[2] === '/' ? '/' : '*';
+    const T = getTemporal();
+    if (!T) return null;
+    const ld = isTemporal(left) && left.kind === 'duration' ? left : null;
+    const rd = isTemporal(right) && right.kind === 'duration' ? right : null;
+
+    // ① `duration / duration` → number（**必须同量纲**，跨量纲无定义）
+    if (op === '/' && ld && rd) {
+      if (durationKindOf(ld) !== durationKindOf(rd)) return null;
+      const b = durationTotal(rd);
+      if (b === 0) return null;
+      return durationTotal(ld) / b;
+    }
+    // ② `duration * duration` 无定义 → 交回 core 报错
+    if (ld && rd) return null;
+
+    const d = ld ?? rd;
+    const scalar = ld ? right : left;
+    if (!d || typeof scalar !== 'number' || !Number.isFinite(scalar)) return null;
+    if (op === '/') {
+      if (scalar === 0) return null;
+      return scaleDuration(d, 1 / scalar);
+    }
+    return scaleDuration(d, scalar);
+  },
+  /**
+   * ★ **两个同类时间值相减** → duration（DMN 1.5 §10.3.1.3 表的后三档）。
+   *
+   * 规范给的三档（此前 core 完全没接这条路径 → 一律 `null`）：
+   *   `date - date`         → days and time duration，**按天**（`largestUnit: 'days'`）
+   *   `time - time`         → days and time duration，**按小时**
+   *   `date and time - date and time` → days and time duration，**按天**
+   *
+   * 返回 `null` = "这不是我能管的算式"（异类、含 duration）→ core 落回数字分支报类型错。
+   */
+  [TEMPORAL_SUBTRACT]: (args) => {
+    const left = args[0] ?? null;
+    const right = args[1] ?? null;
+    if (!isTemporal(left) || !isTemporal(right)) return null;
+    if (left.kind === 'duration' || right.kind === 'duration') return null;
+    /*
+     * 异类只在 `date` ↔ `date and time` 之间有定义（规范表有这一档），
+     * 其余（`date - time` 等）交回 core 报类型错。
+     */
+    const kinds = new Set([left.kind, right.kind]);
+    if (kinds.size > 1 && !(kinds.has('date') && kinds.has('dateTime'))) return null;
+    return subtractTemporals(left, right);
+  },
   [TEMPORAL_UNARY_MINUS]: (args) => {
     requireArity(args, TEMPORAL_UNARY_MINUS, 1);
     const v = args[0] ?? null;
@@ -1760,21 +2045,97 @@ export function addDuration(
   return asFeelTemporal(shiftByDuration(base, d, sign));
 }
 
-/** 两个**同类**时间值相减 → 时长（`date-date` 按天、`time-time` 按小时、date-time 按天） */
+/**
+ * 两个时间值相减 → 时长。
+ *
+ * 规范（DMN 1.5 §10.3.1.3）允许的组合只有三种：
+ *   `date - date`、`date and time - date and time`、`time - time`，
+ * 外加 **`date and time` 与 `date` 互减**（此时 `date` 按当日 `00:00:00` 参与）。
+ *
+ * ★ **锚点一致性**（TCK 0100 的 `…_002/004/005/009` 全标 errorResult）：
+ *   两侧必须**都有**绝对位置（UTC offset 或时区名）或**都没有**。
+ *   一有一无 → **无定义**，返回 `null`（不是硬凑一个值）。
+ *   从 `date` 升上来的那一侧按 UTC 补锚点 —— 这正是
+ *   `@"2021-01-02T10:10:10@Europe/Paris" - @"2021-01-01"` = `P1DT9H10M10S` 的来历
+ *   （Paris 冬日 +01:00，而 `2021-01-01` 按 `…T00:00:00Z` 定位）。
+ *
+ * ★ 两侧都有锚点时**按瞬时**相减（跨时区名亦然）：
+ *   `@Europe/Paris - @Asia/Dhaka` 必须得 `P1DT5H`，而 Temporal 的
+ *   `PlainDateTime.until(ZonedDateTime)` 会直接抛 —— 故先各自折算成 `Instant`。
+ */
 export function subtractTemporals(a: unknown, b: unknown): FeelTemporal | null {
   const x = asFeelTemporal(a);
   const y = asFeelTemporal(b);
-  if (!x || !y || x.kind !== y.kind || x.kind === 'duration') return null;
+  if (!x || !y) return null;
+  if (x.kind === 'duration' || y.kind === 'duration') return null;
+  const kinds = new Set([x.kind, y.kind]);
+  const mixed = kinds.has('date') && kinds.has('dateTime');
+  if (kinds.size > 1 && !mixed) return null;
+
+  const T = getTemporal();
+  if (!T) return null;
+
+  // `date` 升维成 `date and time`：锚点取另一侧有没有 —— 另一侧无锚点就也别加
+  const anchored = hasAnchor(x) || hasAnchor(y);
+  const lift = (v: FeelTemporal): FeelTemporal | null => {
+    if (v.kind !== 'date') return v;
+    return asFeelTemporal(temporalFromText('dateTime', `${v.iso}T00:00:00${anchored ? 'Z' : ''}`));
+  };
+  const lx = lift(x);
+  const ly = lift(y);
+  if (!lx || !ly) return null;
+
+  // 锚点必须一致，否则无定义
+  if (hasAnchor(lx) !== hasAnchor(ly)) return null;
+
   try {
-    const rx = x.raw as any;
-    const ry = y.raw as any;
-    // `a - b` = 从 b 走到 a：`b.until(a)`。方向写反会整体变号（`P1D` ↔ `-P1D`）。
-    const largestUnit = x.kind === 'time' ? 'hours' : 'days';
-    const d = ry.until(rx, { largestUnit });
+    if (lx.kind === 'time') {
+      const d = (ly.raw as any).until(lx.raw, { largestUnit: 'hours' });
+      return asDuration(durationFromText(String(d)));
+    }
+    if (hasAnchor(lx)) {
+      const ia = instantOf(lx);
+      const ib = instantOf(ly);
+      if (ia === null || ia === undefined || ib === null || ib === undefined) return null;
+      /*
+       * `a - b` = 从 b 走到 a：`b.until(a)`。方向写反会整体变号（`P1D` ↔ `-P1D`）。
+       *
+       * ⚠️ `Instant.until` 的 `largestUnit` **上限是 hour**（Instant 没有日历，
+       * 说不出"一天有多长"），传 `days` 直接抛 `Invalid largestUnit`；
+       * 而 FEEL 要的是 days and time duration（`P1DT5H` 而非 `PT29H`），
+       * 故先按小时取差，再用 `round` 把小时按 **24 小时 = 1 天**折回天。
+       */
+      const hours = ib.until(ia, { largestUnit: 'hours' });
+      const d = typeof hours?.round === 'function' ? hours.round({ largestUnit: 'days' }) : hours;
+      return asDuration(durationFromText(String(d)));
+    }
+    const d = (ly.raw as any).until(lx.raw, { largestUnit: 'days' });
     return asDuration(durationFromText(String(d)));
   } catch {
     return null;
   }
+}
+
+/** 该值是否有**绝对位置**（UTC offset 或时区名）—— 决定它能不能与别的锚点值相减 */
+function hasAnchor(v: FeelTemporal): boolean {
+  const z = parseZone(v.src);
+  return (z?.offset ?? null) !== null || (z?.zone ?? null) !== null;
+}
+
+/** 折成 `Instant`（纳秒级瞬时）；无锚点 → `null` */
+function instantOf(v: FeelTemporal): any | null {
+  const T = getTemporal();
+  if (!T) return null;
+  const raw = v.raw as any;
+  try {
+    // 时区名写法底层是 ZonedDateTime，自带 `toInstant`
+    if (typeof raw?.toInstant === 'function') return raw.toInstant();
+    const z = parseZone(v.src);
+    if (z?.offset) return T.Instant.from(`${localTimeOf(v.iso)}${z.offset}`);
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 /** 两个**同类**时长相加/相减；年月类与日时类混算 → `null`（FEEL 未定义） */
@@ -1782,13 +2143,8 @@ export function addDurations(a: unknown, b: unknown, sign: 1 | -1 = 1): FeelTemp
   const x = asDuration(a);
   const y = asDuration(b);
   if (!x || !y || durationKindOf(x) !== durationKindOf(y)) return null;
-  try {
-    const rx = x.raw as any;
-    const next = sign === 1 ? rx.add(y.raw) : rx.subtract(y.raw);
-    return asDuration(wrap('duration', next));
-  } catch {
-    return null;
-  }
+  const next = combineDurations(x, y, sign);
+  return next === null ? null : asDuration(next);
 }
 
 /** 时长的绝对值 */

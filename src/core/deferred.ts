@@ -52,6 +52,35 @@ export const TEMPORAL_FUNCTIONS: ReadonlySet<string> = new Set([
 export const TEMPORAL_UNARY_MINUS = '-@';
 
 /**
+ * ★ **duration 与标量乘除**的延迟能力键（DMN 1.5 §10.3.2.3.4）。
+ *
+ * 规范定义的四条（此前本包全部缺失 → 求值得 `null` + `EVAL_TYPE_MISMATCH`）：
+ *   `duration * number`、`number * duration`、`duration / number`、`duration / duration → number`。
+ * 它不能写在 core 里：duration 的分量缩放必须走 Temporal（`years/months` 与
+ * `days/hours/…` 两套量纲要分别处理，且非整数倍要在量纲内平衡，如 `P1D * 2.5 = P2DT12H`）。
+ *
+ * 与 `-@` 同理：不是用户能写出的函数名，只是 core 的 `binary` 分支 → `./temporal` 的委托键。
+ * 调用约定：`builtins['*@']([left, right, op])`，`op` 为 `'*'` 或 `'/'`；
+ * 返回 `undefined` 表示"这不是我能管的算式" → core 落回数字分支报类型不匹配。
+ */
+export const TEMPORAL_SCALE = '*@';
+
+/**
+ * ★ **两个同类时间值相减**的延迟能力键（DMN 1.5 §10.3.1.3 Subtraction 表的后三档）。
+ *
+ * 规范定义（此前本包全部缺失 → 求值得 `null`）：
+ *   `date - date`        → days and time duration（按**天**）
+ *   `time - time`        → days and time duration（按**小时**）
+ *   `dateTime - dateTime`→ days and time duration（按**天**）
+ * 与 `date − duration` 那几档的区别：这里两个操作数**都不是** duration，
+ * 结果是 duration —— 必须走 Temporal 的 `until()`，core 无法自研。
+ *
+ * 调用约定：`builtins['--']([left, right])`；返回 `null` 表示"这不是我能管的算式"
+ * （异类、含 duration、无绝对位置等）→ core 落回数字分支报类型不匹配。
+ */
+export const TEMPORAL_SUBTRACT = '--';
+
+/**
  * `./temporal` 独占的**属性名**（路径访问 `x.prop` 的右侧）。
  *
  * 与 `TEMPORAL_FUNCTIONS` 分开的原因是用途不同：这里是 `path` 节点的分派依据，
