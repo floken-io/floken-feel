@@ -65,11 +65,19 @@ const MULTI_OPS = ['**', '->', '!=', '<=', '>=', '=', '<', '>', '+', '-', '*', '
 
 const NAME_START = /[A-Za-z_]|[^\x00-\x7F]/;
 /**
- * 名字后续字符 = 字母数字下划线 + FEEL `additional name symbols` 里的 `'` 与 `^`。
+ * 名字后续字符 = 字母数字下划线 + FEEL `additional name symbols` 里的 `'` `^` **与 `-`**。
  * 于是 `Mike's daughter` 这种带撇号的名字可被并入同一名字（空格由 `name-merge` 处理）。
  *
- * ⚠️ 有意偏离：FEEL 的 additional name symbols 还含 `- + * / .`，但那会与算术/路径语义
- * 直接冲突（`a-b` 究竟是一个名字还是减法），floken 保留其运算语义。偏离已登记在 AGENTS.md。
+ * ★ `-` 为什么算名字字符（DMN 1.5 §10.3.1.1 additional name symbols）：
+ *   TCK 0007 的决策名 `Date-Time` / `Date-Time2` 在表达式里就是**一个**名字。
+ *   不当名字字符时 `date(Date-Time)` 会解析成 `date(Date - Time)`（上下文减时间）
+ *   → null，`Time2` / `cHour` / `cOffset` / `dtDuration2` … 连带 11 条全塌。
+ *   合并条件收紧为「`-` 紧邻且后接**名字首字符**」：`a - b`、`a -b`、`a- b` 仍是减法，
+ *   `5-3` 与 `x-1`（后接数字）也仍是减法。
+ *
+ * ⚠️ 有意偏离：`additional name symbols` 里的 `+ * / .` 仍**不**算名字字符 ——
+ *   它们与算术/路径语义的冲突没有"紧邻 + 后接字母"这样可靠的判别条件
+ *   （`a+b` 在 FEEL 里绝大多数情况是加法），保留运算语义。偏离已登记在 AGENTS.md。
  *
  * **非 ASCII 一律算名字字符**（`[^\x00-\x7F]` 覆盖代理对的每一半）：FEEL 的名字是
  * Unicode 字母，中文变量名与 emoji 键（TCK 0083 的 `{🐎: "bar"}`）都必须能进 token 流。
@@ -239,10 +247,17 @@ export function tokenize(src: string): Token[] {
       continue;
     }
 
-    // 名字 / 关键字
+    // 名字 / 关键字（含 `-` 连字符，见 `NAME_PART` 上的说明）
     if (NAME_START.test(ch)) {
       const start = i;
-      while (i < len && NAME_PART.test(src.charAt(i))) i += 1;
+      let end = i;
+      while (end < len && NAME_PART.test(src.charAt(end))) end += 1;
+      // `a-b-c`：`-` 可重复出现，合并后继续吞名字段
+      while (src.charAt(end) === '-' && NAME_START.test(src.charAt(end + 1))) {
+        end += 1;
+        while (end < len && NAME_PART.test(src.charAt(end))) end += 1;
+      }
+      i = end;
       const word = src.slice(start, i);
       tokens.push(
         KEYWORDS.has(word)

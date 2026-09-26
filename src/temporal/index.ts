@@ -1183,20 +1183,55 @@ function dateOfComponents(yv: Value, mv: Value, dv: Value, fnName: string): Valu
   }
 }
 
+/**
+ * 秒分量 —— **允许小数**（`time(12, 59, 1.3)` = `12:59:01.3`，TCK 0007 的 `Time3`）。
+ *
+ * 规范把秒定义成 decimal（`time(hour, minute, second, offset)` 的形参是 number），
+ * 而 number 是十进制浮点 —— 分数秒必须落到毫秒/微秒/纳秒分量上，不能取整丢掉。
+ */
+function secondComponent(v: Value, fnName: string, name: string): {
+  second: number;
+  millisecond: number;
+  microsecond: number;
+  nanosecond: number;
+} {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0 || v >= 60) {
+    throw temporalValueError(fnName, {
+      component: `${name} = ${v === null ? 'null' : String(v)}`,
+      expected: 'number',
+    });
+  }
+  const second = Math.floor(v);
+  const frac = v - second;
+  /*
+   * ⚠️ Temporal 的 `from({…})` 各字段**有各自的量程、不跨字段进位**：
+   * `nanosecond` 只接受 0–999（传 3e8 直接抛 `Invalid nanosecond`）。
+   * 故分数秒必须自己拆成 毫秒 / 微秒 / 纳秒 三段再传。
+   */
+  const nanos = Math.round(frac * 1e9);
+  const millisecond = Math.floor(nanos / 1e6);
+  const rest = nanos % 1e6;
+  const microsecond = Math.floor(rest / 1e3);
+  return { second, millisecond, microsecond, nanosecond: rest % 1e3 };
+}
+
 /** `time(<h>, <m>, <s>[, offset])` 分量式（TCK 1116#015、#038~#048、#076~#079、#082/#083） */
 function timeOfComponents(hv: Value, mv: Value, sv: Value, ov: Value, fnName: string): Value {
   const T = getTemporal();
   if (!T) return null;
   const hour = intComponent(hv, fnName, 'hour', 0, 23);
   const minute = intComponent(mv, fnName, 'minute', 0, 59);
-  const second = intComponent(sv, fnName, 'second', 0, 59);
+  const { second, millisecond, microsecond, nanosecond } = secondComponent(sv, fnName, 'second');
   const zone = ov === null || ov === undefined ? NO_ZONE : offsetZone(ov, fnName);
   try {
     // 同 `dateOfComponents`：显式 `reject`。分量范围虽已由 `intComponent` 守死，
     // 但显式声明可防止后续放宽范围时再次掉进 `constrain` 的静默规整。
     return wrap(
       'time',
-      T.PlainTime.from({ hour, minute, second }, { overflow: 'reject' }),
+      T.PlainTime.from(
+        { hour, minute, second, millisecond, microsecond, nanosecond },
+        { overflow: 'reject' },
+      ),
       undefined,
       zone,
     );
@@ -1246,7 +1281,16 @@ function combineDateTime(dv: Value, tv: Value, fnName: string): Value {
       microsecond: tr.microsecond,
       nanosecond: tr.nanosecond,
     });
-    return wrap('dateTime', raw, undefined, parseZone(t.iso));
+    /*
+     * ★ 必须把 `src` 补上（此前传 `undefined`）：
+     *   ① `.time offset` 只能从原文反解 —— `PlainDateTime` 不保存偏移，
+     *      于是 `date and time(date(…), time("00:00:01-01:00")).time offset` 会得 null
+     *      （TCK 0007 的 `cOffset` 要求 `-PT1H`）；
+     *   ② `shiftByDuration` 也靠 `base.src` 反解偏移（`parseZone(base.src)`），
+     *      丢了它，对这类值做 `± duration` 会把时区算丢。
+     */
+    const zone = parseZone(t.iso);
+    return wrap('dateTime', raw, `${String(raw)}${zoneSuffix(zone)}`, zone);
   } catch {
     throw temporalValueError(fnName, {
       component: `date and time(${t.iso})`,
