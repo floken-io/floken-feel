@@ -62,8 +62,43 @@ describe('① list replace（DMN 1.5 新增）', () => {
     ]);
   });
 
+  /*
+   * ★ `match` 的**形参必须恰好两个**（TCK 1155 decision018）：
+   *   1 参的 `function(item) …` 要求 null —— 形参少一个，`newItem` 位置会静默补 null，
+   *   判定的语义就变了。同理 3 参（decision017）也不行。
+   */
   it('match 形态：判定非 true（含 null）保持原值 —— 三值逻辑', () => {
-    expect(val('list replace([1, 2, 3], function(item) null, 9)')).toEqual([1, 2, 3]);
+    expect(val('list replace([1, 2, 3], function(item, newItem) null, 9)')).toEqual([1, 2, 3]);
+  });
+
+  it('match 形态：形参个数必须恰好 2（TCK 1155 decision017/018）', () => {
+    nullWithDiag('list replace([2, 4], function(item) null, 9)');
+    nullWithDiag('list replace([2, 4], function(item, newItem, extra) true, 9)');
+    // 判定返回非布尔（这里返回 number）也是错误（decision019）
+    nullWithDiag('list replace([2, 4], function(item, newItem) item, 9)');
+  });
+
+  it('位置形态：非整数位置**向零取整**（TCK 1155 decision011/011_a）', () => {
+    expect(val('list replace([1,2,3], 2.5, 4)')).toEqual([1, 4, 3]); // 2.5 → 2
+    expect(val('list replace([1,2,3], -1.5, 4)')).toEqual([1, 2, 4]); // -1.5 → -1（末位）
+    // 这两条合起来排除了 四舍五入 / half-even / floor，只剩向零取整
+  });
+
+  it('list 形参：单值按单元素列表（singleton list 隐式转换）', () => {
+    expect(val('list replace(1, 1, 5)')).toEqual([5]);
+    // ★ null 不是"装了一个 null 的列表"，仍是类型错误
+    nullWithDiag('list replace(null, 1, 4)');
+  });
+
+  it('命名参数：`position:` / `match:` 两套签名（TCK 1155 decision012/013）', () => {
+    expect(val('list replace(position: 2, newItem: 4, list: [1,2,3])')).toEqual([1, 4, 3]);
+    expect(
+      val('list replace(match: function(item, newItem) item = 2, newItem: 4, list: [1,2,3])'),
+    ).toEqual([1, 4, 3]);
+    // 错的形参名 → NAMED_ARG
+    expect(code('list replace(position: 2, newItem: 4, list: [1,2,3], foo: 1)')).toBe(
+      FEEL_ERROR_CODES.EVAL_NAMED_ARG,
+    );
   });
 
   it('不改动原列表（FEEL 列表不可变语义）', () => {
@@ -78,8 +113,9 @@ describe('① list replace（DMN 1.5 新增）', () => {
     }
   });
 
-  it('错误：列表实参非列表 → ARG_TYPE', () => {
-    for (const src of ['list replace("x", 1, 0)', 'list replace([1], "1", 0)']) {
+  it('错误：位置/实参类型 → ARG_TYPE', () => {
+    // 位置形参**不做**字符串→数字隐式转换（`sublist` 同口径，TCK 1155 decision010）
+    for (const src of ['list replace([1], "1", 0)', 'list replace([1], null, 0)']) {
       nullWithDiag(src);
       expect(code(src)).toBe(FEEL_ERROR_CODES.EVAL_ARG_TYPE);
     }

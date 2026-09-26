@@ -49,6 +49,29 @@ export interface FeelFunction {
   readonly __feelFunction: true;
   readonly name: string;
   readonly call: (args: Value[], ctx: FeelContext) => Value;
+  /**
+   * 函数字面量声明的**形参名**（`function(item, newItem) …` → `['item','newItem']`）。
+   *
+   * 只由**字面量**带；内置函数值（`abs` 当值传）与宿主注入的函数没有 —— 故它是
+   * 「已知才校验，未知放行」的可选信息，不是契约强制。
+   * 用途：`list replace(list, match, newItem)` 必须拒掉形参个数不是 2 的 `match`
+   * （TCK 1155 decision017/018：3 参 / 1 参都要求 null）。
+   */
+  readonly params?: readonly string[];
+}
+
+/**
+ * 造一个 FEEL **函数值**。
+ *
+ * ★ 参数化的函数值（`function(a, b) …`）必须把形参名一并挂上 —— 见 `FeelFunction.params`。
+ */
+export function makeFunction(
+  name: string,
+  call: (args: Value[], ctx: FeelContext) => Value,
+  params?: readonly string[],
+): FeelFunction {
+  const base: FeelFunction = { __feelFunction: true, name, call };
+  return params === undefined ? base : { ...base, params };
 }
 
 /**
@@ -255,12 +278,6 @@ export function toFeelFunction(
 }
 
 /** 直接以 (args, ctx) 形态构造 FEEL 函数值（供函数字面量/闭包使用） */
-export function makeFunction(
-  name: string,
-  call: (args: Value[], ctx: FeelContext) => Value,
-): FeelFunction {
-  return { __feelFunction: true, name, call };
-}
 
 // ---------- AST ----------
 

@@ -98,26 +98,62 @@ export const LIST_BUILTINS: Record<string, NativeFn> = {
    */
   'list replace': (a) => {
     requireArity(a, 'list replace', 3);
-    const list = asList(a[0] ?? null);
+    const rawList = a[0] ?? null;
+    /*
+     * ★ **`list` 形参接受单值 → 单元素列表**（DMN 的 singleton list 隐式转换）：
+     * `list replace(1, 1, 5)` = `[5]`（TCK 1155 decision021）。
+     * ⚠️ 只有 `null` 仍按"非列表"报错（decision006 的 `list replace(null, 1, 4)` 要求 null），
+     *    null 不是"装了一个 null 的列表"。
+     */
+    const list =
+      isList(rawList) ? rawList : rawList === null ? null : [rawList];
     if (list === null) {
-      throw argTypeError('list replace', 'list', 'list', feelTypeName(a[0] ?? null));
+      throw argTypeError('list replace', 'list', 'list', feelTypeName(rawList));
     }
     const newItem = a[2] ?? null;
     const selector = a[1] ?? null;
+
     if (isFunction(selector)) {
-      return list.map((item) =>
-        selector.call([item, newItem], EMPTY_CONTEXT) === true ? newItem : item,
-      );
+      /*
+       * ★ `match` 的**形参必须恰好两个**（`function(item, newItem)`）：
+       *   1 参（decision018）与 3 参（decision017）的写法都要求 null ——
+       *   形参个数不对时"少传的那个位置"是静默补 null，判定的语义就变了。
+       *   只有**字面量**带 `params`（内置函数值没有）→ 未知则放行，不误报。
+       */
+      const params = selector.params;
+      if (params !== undefined && params.length !== 2) {
+        throw argTypeError(
+          'list replace',
+          'match',
+          'function with 2 parameters (item, newItem)',
+          `function with ${params.length} parameter(s)`,
+        );
+      }
+      return list.map((item) => {
+        const r = selector.call([item, newItem], EMPTY_CONTEXT);
+        // 判定必须落在布尔上：返回 `item`（数字）这类非布尔结果是**错误**（decision019）
+        if (r !== true && r !== false && r !== null) {
+          throw argTypeError('list replace', 'match', 'boolean result', feelTypeName(r));
+        }
+        return r === true ? newItem : item; // 三值：null（未知）→ 保留原值
+      });
     }
     /*
      * 位置**必须是 number**：`null` / 字符串 / 布尔都不匹配 `number` 形参 ——
      * 那是类型错误（抛），不是"未知值"（`helpers.ts` 全局口径）。
-     * ⚠️ 故不能用 `toNumber()`：它会把 `"1"` 宽松转成 `1`，等于静默接受非法实参。
+     * ⚠️ 故不能用 `toNumber()`：它会把 `"1"` 宽松转成 `1`，等于静默接受非法实参
+     *    （decision010 的 `list replace([1,2,3], "2", 4)` 要求 null）。
      */
-    if (typeof selector !== 'number' || !Number.isInteger(selector)) {
+    if (typeof selector !== 'number' || !Number.isFinite(selector)) {
       throw argTypeError('list replace', 'position', 'number', feelTypeName(selector));
     }
-    const idx = selector > 0 ? selector - 1 : list.length + selector;
+    /*
+     * ★ 非整数位置**向零取整**（不是四舍五入、也不是 floor）：
+     *   `2.5 → 2`、`-1.5 → -1`（TCK 1155 decision011 / decision011_a 各钉一端 ——
+     *   这两条合起来排除了 half-up / half-even / floor，只剩向零取整）。
+     */
+    const pos = Math.trunc(selector);
+    const idx = pos > 0 ? pos - 1 : list.length + pos;
     if (idx < 0 || idx >= list.length) {
       throw argRangeError('list replace', 'position', selector, -list.length, list.length);
     }

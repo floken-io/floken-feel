@@ -760,13 +760,18 @@ export function evaluateNode(
     // 函数字面量：闭包捕获**定义处**上下文，形参按位置绑定
     case 'function': {
       const { params, body } = node;
-      return makeFunction('function', (args) => {
-        const bindings: Record<string, Value> = {};
-        params.forEach((p, i) => {
-          bindings[p] = args[i] ?? null;
-        });
-        return evaluateNode(body, ctx.with(bindings), warnings, builtins, runtime);
-      });
+      // ★ 形参名要挂到函数值上：`list replace` 的 `match` 需按形参个数校验（见 `FeelFunction.params`）
+      return makeFunction(
+        'function',
+        (args) => {
+          const bindings: Record<string, Value> = {};
+          params.forEach((p, i) => {
+            bindings[p] = args[i] ?? null;
+          });
+          return evaluateNode(body, ctx.with(bindings), warnings, builtins, runtime);
+        },
+        params,
+      );
     }
 
     case 'list':

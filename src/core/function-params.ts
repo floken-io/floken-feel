@@ -114,6 +114,12 @@ const PARAMS: Record<string, readonly ParamSlot[]> = {
    * 上面 14 个区间关系函数仍未登记（点版 / 区间版两套形参名，见 `interval.ts` 文件头）。
    */
   range: ['from'],
+  /*
+   * `list replace(list, position, newItem)` 与 `list replace(list, match, newItem)`
+   * 是**同名重载**：第 2 位既可能是位置（number）也可能是判定函数。
+   * 与 `context put` 同法：合并到一个别名位上，实现按**实参类型**分流（形参名不必读）。
+   */
+  'list replace': ['list', ['position', 'match'], 'newItem'],
   // ---- 时间（实现见 ./temporal）----
   date: ['from', 'year', 'month', 'day'],
   time: ['from', 'hour', 'minute', 'second', 'offset'],
