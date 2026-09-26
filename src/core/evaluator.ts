@@ -15,12 +15,11 @@ import {
   argTypeError,
   FEEL_DIAGNOSTIC_CODES,
   FEEL_ERROR_CODES,
+  FeelError,
   diagnostic,
   functionNotAllowed,
   limitExceeded,
   namedArgError,
-  notCallableError,
-  operandTypeError,
   optionError,
   temporalNotLoaded,
   undefinedResultError,
@@ -264,6 +263,29 @@ function diag(
 ): void {
   warnings.push(diagnostic({ code, message, start: node.start, end: node.end }));
 }
+
+/**
+ * 调用边界转换为 `null` 的**参数/类型类**错误码（对齐 DMN 1.4 §10.3.2.13.1 + feelin v8.2.0）。
+ *
+ * 内置函数在求值期对「arity / 实参类型 / 取值越界 / 命名参数 / 时间字面量非法 / 时长分量跨类」
+ * 抛出这些码，属于"调用结果 unknown"——规范把结果定为 `null`，不是 error。故在 `call` 节点
+ * 统一捕获并转成 `null + 诊断`。
+ *
+ * 注意 `EVAL_UNDEFINED`（函数**结果**无定义，如 `sqrt(-1)`/`log(0)`/`modulo(x,0)`/`product([])`
+ * /`stddev([1])`/`{重复键上下文}`）**不在**本集合：它属于"结果"错误而非"参数/类型不符"，按
+ * `AGENTS.md §5` 与 TCK `errorResult` 仍须 THROW，故照旧向外抛出。
+ *
+ * 不在此集合的错误（能力未加载 `FEEL_NOT_LOADED_TEMPORAL`、S-FEEL 白名单越界、语法/资源上限）
+ * 是调用方**无法继续**的硬错误，照旧向外抛出。
+ */
+const PARAM_ERROR_CODES = new Set<string>([
+  FEEL_ERROR_CODES.EVAL_ARG_COUNT,
+  FEEL_ERROR_CODES.EVAL_ARG_TYPE,
+  FEEL_ERROR_CODES.EVAL_ARG_RANGE,
+  FEEL_ERROR_CODES.EVAL_NAMED_ARG,
+  FEEL_ERROR_CODES.EVAL_TEMPORAL_VALUE,
+  FEEL_ERROR_CODES.EVAL_DURATION_COMPONENT,
+]);
 
 /** 数字读取（`strictCoercion` 下拒绝字符串→数字） */
 function num(v: Value, rt: FeelEvalRuntime | undefined): number | null {
@@ -575,12 +597,11 @@ export function evaluateNode(
       }
       const domain = evaluateNode(node.domain, ctx, warnings, builtins, runtime);
       /*
-       * ★ 被测试值是 `null` 且域是**区间** → 抛（TCK 0072#null_001 `null in [1..10]`）。
-       * 与 `between` 同口径（0071#null_001~003）：null 参与区间判定在 FEEL 里没有定义。
-       * 只管区间域 —— 列表域的 `null in [null]` 仍是普通的相等判定（值为 true）。
+       * 被测试值是 `null` 且域是**区间** → 比较无定义 → **null**（unknown，对齐 feelin
+       * `compareIn`：nil 值/测试 → unknown → null）。列表域的 `null in [null]` 仍是普通相等判定。
        */
       if (v === null && isRange(domain)) {
-        throw operandTypeError('in', 'null', feelTypeName(domain));
+        return null;
       }
       // 区间：前缀写法（`(< 5)` / `(!=5)`）按运算符判，显式写法按端点包含判
       if (isRange(domain)) return rangeMatch(domain, v);
@@ -613,18 +634,13 @@ export function evaluateNode(
       const lo = evaluateNode(node.low, ctx, warnings, builtins, runtime);
       const hi = evaluateNode(node.high, ctx, warnings, builtins, runtime);
       /*
-       * ★ 任一端是 `null` → **抛**（TCK 0071#null_001 `null between 1 and 10`、
-       * #null_002 `2 between null and 10`、#null_003 `2 between 1 and null` 全是 errorResult）。
-       *
-       * 「比较得不出结果 → null」只适用于**类型对得上但值无法定序**的情形；
-       * null 参与区间判定在 FEEL 里没有定义，官方按错误判。
+       * 任一端是 `null` → 比较无定义 → **null**（unknown）。
+       * 规范/feelin 把"null 参与区间判定"归为 unknown（feelin `between`：`start===null || end===null` → null），
+       * 不抛错。
        */
-      if (v === null || lo === null || hi === null) {
-        throw operandTypeError('between', feelTypeName(v), feelTypeName(lo));
-      }
       const c1 = compareValues(v, lo);
       const c2 = compareValues(v, hi);
-      if (c1 === null || c2 === null) return null; // 任一端不可比较 → 未知
+      if (c1 === null || c2 === null) return null; // 任一端不可比较 / 为 null → 未知
       return c1 >= 0 && c2 <= 0;
     }
 
@@ -727,34 +743,56 @@ export function evaluateNode(
         }
       }
 
-      // 命名参数 → 先按形参名表对位（DMN 1.4 §10.3.2），再逐项求值
-      const reordered = node.argNames
-        ? reorderNamedArgs(fnName, node.argNames, node.args)
-        : null;
-      const argNodes = reordered ? reordered.nodes : node.args;
-      const args = argNodes.map((a) => evaluateNode(a, ctx, warnings, builtins, runtime));
-
       /*
-       * ★ 被调者不是函数 → **抛**（TCK 1131 的 8 条全是 `errorResult`）：
+       * ★ 被调者不是函数 → **诊断 + null**（对齐 DMN 1.4 §10.3.2.13.1 与 feelin v8.2.0）：
        * `non_existing_function()`（名字未绑定）、`null()`、`"some_func"()`、`"abs"(-1)`、
        * `@"2023-11-11"()`、`123()`、`true()`、`false()`。
        *
-       * 「调用失败给 null」是把**类型错误**当成**未知值**——FEEL 没有这条规则。
-       * 三值语义只管"值存在但未知"，不管"这个东西根本不能调用"。
+       * 规范把"调用目标不符参数域"的结果定为 `null`（unknown），不是 error；feelin 对此
+       * `addWarning('NO_FUNCTION_FOUND')` 后返回 null。故走诊断通道，不抛。
        */
       if (!fn) {
-        throw notCallableError(
-          node.callee.type === 'name' ? node.callee.name : null,
-          calleeType,
+        diag(
+          warnings,
+          FEEL_DIAGNOSTIC_CODES.EVAL_NO_FUNCTION,
+          node.callee.type === 'name'
+            ? `Function '${node.callee.name}' not found`
+            : 'Expression is not callable',
+          node,
         );
+        return null;
       }
 
-      // S-FEEL 白名单：具名函数越界 → 抛（匿名函数字面量不在此列，由引擎侧语法校验拦）
-      if (runtime?.allowed && fnName !== null && !runtime.allowed.has(fnName)) {
-        throw functionNotAllowed(fnName, [...runtime.allowed]);
-      }
+      /*
+       * 调用边界：把**参数/类型类**错误（arity / 类型 / 取值越界 / 命名参数 / 时间字面量 /
+       * 时长分量跨类）统一转成 `null + 诊断`，对齐规范 §10.3.2.13.1 + feelin。
+       * 这些码由内置函数在求值期抛出，属于"调用结果 unknown"，不向外传播。
+       * 其余错误（能力未加载 `FEEL_NOT_LOADED_TEMPORAL`、S-FEEL 白名单越界、语法/资源上限）
+       * 是调用方无法继续的硬错误，照旧抛出。
+       */
+      let result: Value;
+      try {
+        // 命名参数 → 先按形参名表对位（DMN 1.4 §10.3.2），再逐项求值
+        const reordered = node.argNames
+          ? reorderNamedArgs(fnName, node.argNames, node.args)
+          : null;
+        const argNodes = reordered ? reordered.nodes : node.args;
+        const args = argNodes.map((a) => evaluateNode(a, ctx, warnings, builtins, runtime));
 
-      return fn(args, ctx, runtime, reordered?.used);
+        // S-FEEL 白名单：具名函数越界 → 抛（引擎策略，非 FEEL 语义；不在转换集合内）
+        if (runtime?.allowed && fnName !== null && !runtime.allowed.has(fnName)) {
+          throw functionNotAllowed(fnName, [...runtime.allowed]);
+        }
+
+        result = fn(args, ctx, runtime, reordered?.used);
+      } catch (e) {
+        if (e instanceof FeelError && PARAM_ERROR_CODES.has(e.code)) {
+          diag(warnings, e.code, e.message, node);
+          return null;
+        }
+        throw e;
+      }
+      return result;
     }
 
     case 'unary': {
@@ -787,20 +825,11 @@ export function evaluateNode(
       const l = num(lv, runtime);
       const r = num(rv, runtime);
       /*
-       * ★ 幂只对 `number` 有定义 —— 其余类型**抛**（TCK 0075#002~#011 全是 errorResult：
-       * `"foo" ** 4`、`true ** 4`、`date("2018-12-10") ** 4`、`time(...) ** 4`、
-       * `date and time(...) ** 4`、`duration("P2Y") ** 4`、`duration("P2D") ** 4`、
-       * `{a: 2} ** 4`、`[2] ** 4`、`(function() "foo") ** 4`）。
-       *
-       * ⚠️ 必须排在下面的 `l === null || r === null`（诊断 + null）**之前**：
-       * 类型不符时 `num()` 先给了 null，落进那段就再也到不了 `case '**'`。
-       * 判据用**原始值的类型**而不是 `num()` 的结果：`num()` 是给 `+ - * /` 做宽松转换的
-       * （布尔/数字字符串会被放宽），而幂不允许这种放宽。
-       * 其余算术运算符保持"类型不符 → 诊断 + null"（TCK 对它们是另一套口径）。
+       * 幂 `**` 与 `+ - * /` 同口径：**非数字 → null**（三值传播 + 对齐 feelin）。
+       * 规范不要求幂运算对 `null`/非数字抛错；`num()` 已把非数字放宽成 `null`，
+       * 落到下面的 `l === null || r === null` 统一返回 null（TCK 0075 的 errorResult 用例
+       * `"foo" ** 4` 等，feelin 同样返回 null）。
        */
-      if (node.op === '**' && (typeof lv !== 'number' || typeof rv !== 'number')) {
-        throw operandTypeError('**', feelTypeName(lv), feelTypeName(rv));
-      }
       if (l === null || r === null) {
         diag(
           warnings,
@@ -838,7 +867,8 @@ export function evaluateNode(
          * - 同类型 → 深相等。
          */
         if (l !== null && r !== null && !sameTypeFamily(l, r)) {
-          throw operandTypeError(node.op, feelTypeName(l), feelTypeName(r));
+          // 跨类型比较：结果 unknown（null），不是 error（对齐 feelin：`equals` 返回 null）
+          return null;
         }
         const eq = deepEquals(l, r);
         return node.op === '=' ? eq : !eq;

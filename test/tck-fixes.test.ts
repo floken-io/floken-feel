@@ -10,6 +10,27 @@ import '../src/entries/temporal.js';
  * 防止后续改 parser/求值器时悄悄退化。来源用例写在注释里，便于回溯。
  */
 
+/**
+ * 回退后（对齐 DMN 1.4 §10.3.2.13.1 + feelin v8.2.0）：内置函数**形参/类型类**错误
+ * （arity / 实参类型 / 取值越界 / 命名参数 / 时间字面量非法 / 时长分量跨类）不再抛出，
+ * 而是返回 `null` + 诊断。本助手断言「值为 null」且「携带指定诊断码」，既验证不抛错、
+ * 也锁死诊断归类（与规范/feelin 的 null 口径一致）。
+ */
+const nullDiag = (src: string, code: string): void => {
+  const r = evaluate(src);
+  expect(r.value, `value of ${src}`).toBe(null);
+  expect(r.warnings.some((w: { code?: string }) => w.code === code), `diag of ${src}`).toBe(true);
+};
+
+/**
+ * 部分内置函数对 null / 非字符串实参走**静默** `return null`（如 `reqString` /
+ * `reqBoolean` / `get value` 的 early-return 分支），不抛错、也不挂诊断。
+ * 这类只断言「值为 null」（回退的核心行为），不校验诊断码。
+ */
+const nullVal = (src: string): void => {
+  expect(evaluate(src).value, `value of ${src}`).toBe(null);
+};
+
 describe('floken-feel · TCK 修复回归 · 词法与字面量', () => {
   it('指数记法 `1.23e4`（TCK 0077/0078 数值边界）', () => {
     expect(evaluate('1.23e4').value).toBe(12300);
@@ -107,18 +128,12 @@ describe('floken-feel · TCK 修复回归 · 区间（Range 一等公民）', ()
   });
 
   /*
-   * ★ `null in <区间>` → **抛**（TCK 0072#null_001），与 `between` 同口径（0071）。
+   * ★ `null in <区间>` → **null**（unknown，对齐 DMN 1.4 §10.3.2.13.1 + feelin v8.2.0）。
    * 注意区分"区间**端点**是 null"（`null_001_a~d`：开→null、闭→抛，见上一条）与
-   * "**被测试值**是 null"（本条）：前者端点语义明确，后者在 FEEL 里没有定义。
+   * "**被测试值**是 null"（本条）：前者端点语义明确，后者在 FEEL 里归为 unknown → null。
    */
-  it('被测试值是 null 且域是区间 → 抛（TCK 0072 null_001）', () => {
-    let code = '';
-    try {
-      evaluate('null in [1..10]');
-    } catch (e: any) {
-      code = e?.code ?? '';
-    }
-    expect(code).toBe('FEEL_EVAL_ARG_TYPE');
+  it('被测试值是 null 且域是区间 → null（TCK 0072 null_001，对齐规范/feelin）', () => {
+    expect(evaluate('null in [1..10]').value).toBe(null);
   });
 
   it('类型不可比 → null（未知）', () => {
@@ -159,26 +174,22 @@ describe('floken-feel · TCK 修复回归 · 形参有类型（0050/0056/1101/11
     expect(evaluate('round half down(-1.126, 2)').value).toBe(-1.13);
   });
 
-  it('`scale` 合法范围为 [-6111, 6176]，越界抛 EVAL_ARG_RANGE', () => {
+  it('`scale` 合法范围为 [-6111, 6176]，越界 → null（+诊断 EVAL_ARG_RANGE，对齐规范）', () => {
     expect(evaluate('round up(5.5, 6176)').value).toBe(5.5);
-    const err = catchErr('round up(5.5, (-6111 - 1))');
-    expect(err?.code).toBe('FEEL_EVAL_ARG_RANGE');
-    expect(err?.details).toMatchObject({ param: 'scale', min: -6111, max: 6176 });
+    nullDiag('round up(5.5, (-6111 - 1))', 'FEEL_EVAL_ARG_RANGE');
   });
 
-  it('`null` / 字符串 / 布尔 都不是 number → 抛 EVAL_ARG_TYPE（不是返回 null）', () => {
+  it('`null` / 字符串 / 布尔 都不是 number → null（+诊断 EVAL_ARG_TYPE，对齐规范）', () => {
     for (const src of ['floor(null, 1)', 'abs("-1")', 'abs(null)', 'sqrt("4")', 'abs(true)']) {
-      expect(catchErr(src)?.code, src).toBe('FEEL_EVAL_ARG_TYPE');
+      nullDiag(src, 'FEEL_EVAL_ARG_TYPE');
     }
   });
 
-  it('少给 / 多给参数抛 EVAL_ARG_COUNT，且 details 给出区间', () => {
-    expect(catchErr('abs()')?.code).toBe('FEEL_EVAL_ARG_COUNT');
-    expect(catchErr('abs(1, 1)')?.details?.expected).toEqual([1]);
-    expect(catchErr('floor()')?.code).toBe('FEEL_EVAL_ARG_COUNT');
-    const tooMany = catchErr('floor(1.5, 1, 2)');
-    expect(tooMany?.code).toBe('FEEL_EVAL_ARG_COUNT');
-    expect(tooMany?.details?.expected).toEqual([1, 2]);
+  it('少给 / 多给参数 → null（+诊断 EVAL_ARG_COUNT，对齐规范）', () => {
+    nullDiag('abs()', 'FEEL_EVAL_ARG_COUNT');
+    nullDiag('abs(1, 1)', 'FEEL_EVAL_ARG_COUNT');
+    nullDiag('floor()', 'FEEL_EVAL_ARG_COUNT');
+    nullDiag('floor(1.5, 1, 2)', 'FEEL_EVAL_ARG_COUNT');
   });
 
   it('modulo 不等于 JS `%`：商向下取整（TCK 0056）', () => {
@@ -196,12 +207,12 @@ describe('floken-feel · TCK 修复回归 · 形参有类型（0050/0056/1101/11
     expect(evaluate('(10+20)/0').value).toBe(null);
   });
 
-  it('abs 对 duration 有定义、对 date/time 抛类型错（TCK 0050）', () => {
+  it('abs 对 duration 有定义、对 date/time → null（+诊断 EVAL_ARG_TYPE，对齐规范）', () => {
     expect(evaluate('abs(duration("-P1D"))').value).toMatchObject({ kind: 'duration' });
     expect(evaluate('abs(duration("-P1D")) = duration("P1D")').value).toBe(true);
     expect(evaluate('abs(duration("-P1Y")) = duration("P1Y")').value).toBe(true);
-    expect(catchErr('abs(time("00:00:00"))')?.code).toBe('FEEL_EVAL_ARG_TYPE');
-    expect(catchErr('abs(date("2018-12-06"))')?.code).toBe('FEEL_EVAL_ARG_TYPE');
+    nullDiag('abs(time("00:00:00"))', 'FEEL_EVAL_ARG_TYPE');
+    nullDiag('abs(date("2018-12-06"))', 'FEEL_EVAL_ARG_TYPE');
   });
 });
 
@@ -274,11 +285,11 @@ describe('floken-feel · TCK 修复回归 · 时间构造器重载与写法（11
     expect(iso('date and time("99999-12-31T11:22:33")')).toBe('99999-12-31T11:22:33');
     expect(iso('date and time("-99999-12-31T11:22:33")')).toBe('-99999-12-31T11:22:33');
     for (const bad of ['date("998-12-31")', 'date("01211-12-31")', 'date("9999999999-12-25")', 'date("+2012-12-02")']) {
-      expect(catchErr(bad)?.code, bad).toBe('FEEL_EVAL_TEMPORAL_VALUE');
+      nullDiag(bad, 'FEEL_EVAL_TEMPORAL_VALUE');
     }
   });
 
-  it('写法非法一律抛 EVAL_TEMPORAL_VALUE（不是给 null）', () => {
+  it('写法非法一律 → null（+诊断 EVAL_TEMPORAL_VALUE，对齐规范/feelin）', () => {
     const bad = [
       'date("2017-13-10")', // 月越界
       'date("2012/12/25")', // 分隔符
@@ -302,7 +313,7 @@ describe('floken-feel · TCK 修复回归 · 时间构造器重载与写法（11
       'date and time(date("2017-08-10"), null)',
     ];
     for (const src of bad) {
-      expect(catchErr(src)?.code, src).toBe('FEEL_EVAL_TEMPORAL_VALUE');
+      nullDiag(src, 'FEEL_EVAL_TEMPORAL_VALUE');
     }
   });
 
@@ -357,9 +368,9 @@ describe('floken-feel · TCK 修复回归 · string() 规范文本（0079）', (
     expect(s('string({"{" : "foo"})')).toBe('{"{": "foo"}');
   });
 
-  it('实参个数必须恰好 1（少给/多给抛 EVAL_ARG_COUNT）', () => {
-    expect(catchErr('string()')?.code).toBe('FEEL_EVAL_ARG_COUNT');
-    expect(catchErr('string("foo", "bar")')?.code).toBe('FEEL_EVAL_ARG_COUNT');
+  it('实参个数必须恰好 1（少给/多给 → null + EVAL_ARG_COUNT，对齐规范）', () => {
+    nullDiag('string()', 'FEEL_EVAL_ARG_COUNT');
+    nullDiag('string("foo", "bar")', 'FEEL_EVAL_ARG_COUNT');
     expect(s('string(from:"foo")')).toBe('foo');
   });
 });
@@ -407,7 +418,7 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
     expect(obj('context({key: "a", value: null})')).toEqual({ a: null });
     expect(obj('context({key: "", value: 1})')).toEqual({ '': 1 });
     expect(obj('context([{key:"a", value:1, ignored:"foo"}])')).toEqual({ a: 1 });
-    // 缺 key / 缺 value / 类型不对 / 个数不对 → 全部抛
+    // 缺 key / 缺 value / 类型不对 / 个数不对 → 全部 null（+诊断，对齐规范/feelin）
     for (const src of [
       'context({value:1})',
       'context({key: "a"})',
@@ -417,7 +428,7 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
       'context()',
       'context([], "foo")',
     ]) {
-      expect(err(src), src).not.toBeNull();
+      expect(evaluate(src).value, src).toBe(null);
     }
   });
 
@@ -442,10 +453,8 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
       original: { a: { b: 1 } },
       copied: { a: { b: 2 } },
     });
-    // 中间层不是上下文（`a` 是数字）/ 空路径 / 路径里有 null → 抛
+    // 中间层不是上下文（`a` 是数字）/ 路径里有 null / 键非字符串 / 个数错 → null（+诊断，对齐规范）
     for (const src of [
-      'context put({x:1, y:{a:0}}, ["y","a","b","c"], 2)',
-      'context put({x:1, y:{a:0}}, [], 2)',
       'context put({x:1, y:{a:0}}, ["y", null], 2)',
       'context put({x:1, y:{a:0}}, [null, "a"], 2)',
       'context put({}, null, 1)',
@@ -454,8 +463,12 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
       'context put({}, "a")',
       'context put({}, "a", 1, 1)',
     ]) {
-      expect(err(src), src).not.toBeNull();
+      expect(evaluate(src).value, src).toBe(null);
     }
+    // 空路径 / 路径走到死胡同（y.a 是数字、再深入 b）→ **结果无定义** → 抛 EVAL_UNDEFINED
+    // （这是"结果"错误而非"参数/类型不符"，故不转 null，与 AGENTS.md §5 + TCK errorResult 一致）
+    expect(err('context put({x:1, y:{a:0}}, [], 2)')?.code).toBe('FEEL_EVAL_UNDEFINED');
+    expect(err('context put({x:1, y:{a:0}}, ["y","a","b","c"], 2)')?.code).toBe('FEEL_EVAL_UNDEFINED');
   });
 
   it('`context put` 同名重载：`keys:` 收列表、`key:` 只收字符串（TCK 1146 nested007/008）', () => {
@@ -464,11 +477,9 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
       y: { a: 2 },
     });
     expect(obj('context put(context: {}, key: "a", value: 1)')).toEqual({ a: 1 });
-    // 列表落在 `key:` 上是签名错（`key` 是 string，不是 list）
-    expect(err('context put(context: {x:1, y:{a:0}}, key: ["y","a"], value: 2)')?.code).toBe(
-      'FEEL_EVAL_ARG_TYPE',
-    );
-    expect(err('context put(context: {}, ky: "a", value: 1)')?.code).toBe('FEEL_EVAL_NAMED_ARG');
+    // 列表落在 `key:` 上是签名错（`key` 是 string，不是 list）→ null + 诊断
+    nullDiag('context put(context: {x:1, y:{a:0}}, key: ["y","a"], value: 2)', 'FEEL_EVAL_ARG_TYPE');
+    nullDiag('context put(context: {}, ky: "a", value: 1)', 'FEEL_EVAL_NAMED_ARG');
   });
 
   it('`context merge`：收列表也收单个上下文，非上下文元素 → 抛（TCK 1147）', () => {
@@ -487,7 +498,7 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
       'context merge([{"a": 1},2,{"b": 2}])',
       'context merge(context: [{"a": 1}])',
     ]) {
-      expect(err(src), src).not.toBeNull();
+      expect(evaluate(src).value, src).toBe(null);
     }
   });
 
@@ -495,7 +506,7 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
     expect(v('count(get entries({a: "foo", b: "bar"}))')).toBe(2);
     expect(obj('get entries({})')).toEqual([]);
     for (const src of ['get entries()', 'get entries({a:"foo"}, {b:"bar"})', 'get entries(null)', 'get entries(123)', 'get entries([1,2,3])']) {
-      expect(err(src), src).not.toBeNull();
+      expect(evaluate(src).value, src).toBe(null);
     }
   });
 
@@ -513,7 +524,7 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
       'string join(123, "X")',
       'string join(null)',
     ]) {
-      expect(err(src), src).not.toBeNull();
+      expect(evaluate(src).value, src).toBe(null);
     }
   });
 });
@@ -634,24 +645,25 @@ describe('floken-feel · TCK 修复回归 · 正则方言（1111 / 1109）', () 
   it('块属性 `\\p{IsBasicLatin}`（TCK K2-MatchesFunc-5/6/7）', () => {
     expect(v('matches("hello world", "\\p{ IsBasicLatin}+", "x")')).toBe(true);
     expect(v('matches("hello world", "\\p{ I s B a s i c L a t i n }+", "x")')).toBe(true);
-    // 不带 `x` 时块名里的空格留着 → 认不出块 → 抛
-    expect(err('matches("hello world", "\\p{ IsBasicLatin}+")')).not.toBeNull();
+    // 不带 `x` 时块名里的空格留着 → 认不出块 → null（+诊断 ARG_TYPE，对齐规范/feelin）
+    nullDiag('matches("hello world", "\\p{ IsBasicLatin}+")', 'FEEL_EVAL_ARG_TYPE');
   });
 
-  it('flags 不认识 / 实参非字符串 / 字符类内反向引用 → 抛（不是返回 null）', () => {
-    for (const src of [
-      'matches("a", "b", "p")',
-      'matches("a", "b", " ")',
-      'matches("a", "b", "X")',
-      'matches("a", [])',
-      'matches("a", "b", [])',
-      'matches("a")',
-      'matches("a", "b", "c", "d")',
-      'matches("abcd", "(asd)[asd\\0]")',
-      'matches("h", "(.)\\3")',
-    ]) {
-      expect(err(src), src).not.toBeNull();
-    }
+  it('flags 不认识 / 实参非字符串 / 字符类内反向引用 → null 或 false（对齐规范，不再抛）', () => {
+    // flags 非法 → null + 诊断 ARG_TYPE（由 compileRegex 的 argTypeError 经边界转换转成 null）
+    nullDiag('matches("a", "b", "p")', 'FEEL_EVAL_ARG_TYPE');
+    nullDiag('matches("a", "b", " ")', 'FEEL_EVAL_ARG_TYPE');
+    nullDiag('matches("a", "b", "X")', 'FEEL_EVAL_ARG_TYPE');
+    // pattern / flags 非字符串 → null（reqString 直接返回 null，无诊断）
+    expect(evaluate('matches("a", [])').value).toBe(null);
+    expect(evaluate('matches("a", "b", [])').value).toBe(null);
+    // 单参：pattern 缺失 → null（reqString 返回 null，无诊断）
+    expect(evaluate('matches("a")').value).toBe(null);
+    // 4 参：实参个数越界 → null + 诊断 ARG_COUNT
+    nullDiag('matches("a", "b", "c", "d")', 'FEEL_EVAL_ARG_COUNT');
+    // 正则方言：字符类内 `\0` / 反向引用 → 非法正则 → 抛 argTypeError → null + 诊断（对齐规范，不再 false）
+    nullDiag('matches("abcd", "(asd)[asd\\0]")', 'FEEL_EVAL_ARG_TYPE');
+    nullDiag('matches("h", "(.)\\3")', 'FEEL_EVAL_ARG_TYPE');
     expect(v('matches("abracadabra", "bra", null)')).toBe(true);
   });
 
@@ -672,9 +684,22 @@ describe('floken-feel · TCK 修复回归 · 正则方言（1111 / 1109）', () 
  * 形参类型**上：FEEL 里 `null` 实参不是"未知值"，是**类型错误** —— 三值语义管的是
  * "值存在但未知"，不是"实参类型不对"。
  */
-describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 null）', () => {
+/**
+ * 第六轮（2026-09-26 续）「严格参数校验」的**回退**：用户拍板「必须对齐规范」。
+ *
+ * 原 r6 把内置函数**形参/类型类**错误（`EVAL_ARG_TYPE` / `EVAL_ARG_COUNT` /
+ * `EVAL_ARG_RANGE` / `EVAL_NAMED_ARG` / `EVAL_TEMPORAL_VALUE` / `EVAL_DURATION_COMPONENT`）
+ * 从「返回 null」改成「抛错」。但 DMN 1.4 §10.3.2.13.1 与 feelin v8.2.0 都明确：
+ * 实参不符参数域的结果是 `null`（unknown），不是 error。故此处全部回退为
+ * 「返回 null + 诊断」，与规范/feelin 一致。
+ *
+ * 注意 `EVAL_UNDEFINED`（函数**结果**无定义，如 `sqrt(-1)`/`log(0)`/`modulo(x,0)`/
+ * `product([])`/`stddev([1])`/`{重复键上下文}`）**不属于**参数/类型不符，按 `AGENTS.md §5`
+ * 与 TCK `errorResult` 仍须 **THROW** —— 见各文件中保留的 `EVAL_UNDEFINED` 断言。
+ */
+describe('floken-feel · TCK 修复回归 · 形参/类型类错误回退为 null（对齐规范 §10.3.2.13.1）', () => {
   const v = (src: string) => evaluate(src).value;
-  /** 抛出的错误码；没抛返回 `null`（错误码在 `e.code` 上，不在 message 里） */
+  /** 仍会抛的错误码（如 `@"…"` 走时间构造器，不经过 call 边界转换）；没抛返回 `null` */
   const code = (src: string): string | null => {
     try {
       evaluate(src);
@@ -683,13 +708,11 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
       return (e as { code?: string }).code ?? null;
     }
   };
-  /** 类型错误统一是 `FEEL_EVAL_ARG_TYPE`（argTypeError 与 operandTypeError 共用） */
-  const ARG_TYPE = 'FEEL_EVAL_ARG_TYPE';
 
-  it('duration 构造器：null / 错类型 / 非法字面量 → 抛（TCK 1120）', () => {
-    // 类型不符（null / number / list）→ FEEL_EVAL_ARG_TYPE
+  it('duration 构造器：null / 错类型 / 非法字面量 → null（+诊断，TCK 1120）', () => {
+    // 类型不符（null / number / list）→ 静默 null（无诊断）
     for (const src of ['duration(null)', 'duration(2017)', 'duration([])']) {
-      expect(code(src), src).toBe(ARG_TYPE);
+      nullVal(src);
     }
     /*
      * 类型是字符串但**不是合法 ISO 8601 时长字面量** → FEEL_EVAL_TEMPORAL_VALUE
@@ -705,33 +728,28 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
       'duration("P1S")',
       'duration("2012T-12-2511:00:00Z")',
     ]) {
-      expect(code(src), src).toBe('FEEL_EVAL_TEMPORAL_VALUE');
+      nullDiag(src, 'FEEL_EVAL_TEMPORAL_VALUE');
     }
-    // arity 0 是**实参个数**错误，不是类型错误
-    expect(code('duration()')).toBe('FEEL_EVAL_ARG_COUNT');
+    // arity 0 → 静默 null（无诊断）
+    nullVal('duration()');
     // 合法用法不受影响
     expect(v('string(duration("P1Y"))')).toBe('P1Y');
     expect(v('string(duration("P1DT2H"))')).toBe('P1DT2H');
   });
 
-  it('years and months duration：null / 错类型 → 抛（TCK 1121）', () => {
+  it('years and months duration：null / 错类型 / 个数错 → null（TCK 1121，静默返回 null 无诊断）', () => {
     for (const src of [
       'years and months duration(null, null)',
       'years and months duration(date("2017-08-11"), null)',
       'years and months duration(date and time("2017-12-31T13:00:00"), null)',
       'years and months duration(null, date("2017-08-11"))',
       'years and months duration([], [])',
-    ]) {
-      expect(code(src), src).toBe(ARG_TYPE);
-    }
-    // 单参 / 0 参先被实参个数拦下（#001 `(null)`、#028 `(2017)`、#029 `("2012T-…")` 都是 1 参）
-    for (const src of [
       'years and months duration(null)',
       'years and months duration(2017)',
       'years and months duration("2012T-12-2511:00:00Z")',
       'years and months duration()',
     ]) {
-      expect(code(src), src).toBe('FEEL_EVAL_ARG_COUNT');
+      nullVal(src);
     }
     // 合法用法不受影响（整月数，向零截断：25 个月 + 20/31 → 25 → P2Y1M）
     expect(
@@ -739,7 +757,7 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
     ).toBe('P2Y1M');
   });
 
-  it('`**` 只对 number 有定义（TCK 0075#002~#011）', () => {
+  it('`**` 只对 number 有定义（TCK 0075#002~#011，非 number → null + 诊断）', () => {
     for (const src of [
       '"foo" ** 4',
       'true ** 4',
@@ -752,7 +770,7 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
       '[2] ** 4',
       '(function() "foo") ** 4',
     ]) {
-      expect(code(src), src).toBe(ARG_TYPE);
+      nullDiag(src, 'FEEL_EVAL_TYPE_MISMATCH');
     }
     // 合法用法不受影响：幂高于乘法、低于一元、左结合
     expect(v('5 + 2**5')).toBe(37);
@@ -760,7 +778,7 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
     expect(v('3 ** 4 ** 5')).toBe(3486784401);
   });
 
-  it('调用非函数值 → 抛 FEEL_EVAL_NOT_CALLABLE（TCK 1131）', () => {
+  it('调用非函数值 → null（+诊断 FEEL_EVAL_NO_FUNCTION，TCK 1131）', () => {
     for (const src of [
       'non_existing_function()',
       'null()',
@@ -771,15 +789,15 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
       'true()',
       'false()',
     ]) {
-      expect(code(src), src).toBe('FEEL_EVAL_NOT_CALLABLE');
+      nullDiag(src, 'FEEL_EVAL_NO_FUNCTION');
     }
     // 正常的调用不受影响
     expect(v('abs(-1)')).toBe(1);
-    // ⚠️ 裸变量**取值**仍是降级（诊断 + null），只有"调用"才是抛
+    // 裸变量**取值**仍是降级（诊断 + null）
     expect(v('nope')).toBe(null);
   });
 
-  it('`get value` 的两个形参都有类型（TCK 0080）', () => {
+  it('`get value` 的两个形参都有类型（TCK 0080，类型不符 → null）', () => {
     for (const src of [
       'get value("foo", "foo")',
       'get value({a: "foo"}, 123)',
@@ -787,23 +805,25 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
       'get value({a: "foo"}, null)',
       'get value(null, null)',
     ]) {
-      expect(code(src), src).toBe(ARG_TYPE);
+      // `get value` 对 null / 非上下文 / 非字符串实参走静默 `return null`（无诊断）
+      nullVal(src);
     }
     // 键不存在是"值存在但没这个键" → null，不是错误
     expect(v('get value({a: "foo"}, "b")')).toBe(null);
     expect(v('get value({a: "foo"}, "a")')).toBe('foo');
   });
 
-  it('`not` 只收 boolean 与 null（TCK 0066）', () => {
+  it('`not` 只收 boolean 与 null（TCK 0066，非布尔 → null）', () => {
     for (const src of ['not(0)', 'not(1)', 'not("true")']) {
-      expect(code(src), src).toBe(ARG_TYPE);
+      // `not` 对非布尔实参走静默 `return null`（无诊断）
+      nullVal(src);
     }
     // `not(null)` 是真正的未知 → null（三值）
     expect(v('not(null)')).toBe(null);
     expect(v('not(true)')).toBe(false);
   });
 
-  it('`split` / `matches` / `contains` 的 null 实参 → 抛（0067 / 1111 / 1110）', () => {
+  it('`split` / `matches` / `contains` 的 null 实参 → null（0067 / 1111 / 1110）', () => {
     for (const src of [
       'split(null, null)',
       'split("foo", null)',
@@ -814,7 +834,8 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
       'contains(null, "bar")',
       'contains("bar", null)',
     ]) {
-      expect(code(src), src).toBe(ARG_TYPE);
+      // 这些函数对 null 实参走静默 `return null`（无诊断）
+      nullVal(src);
     }
     // 可选形参 flags 显式传 null 仍按"无标志"处理（不是错误）
     expect(v('matches("abracadabra", "bra", null)')).toBe(true);
@@ -823,8 +844,8 @@ describe('floken-feel · TCK 修复回归 · 严格参数校验（该抛而非 n
     expect(v('split("a,b,c", ",")')).toEqual(['a', 'b', 'c']);
   });
 
-  it('`@"…"` 字面量写错 → 抛（TCK 0093#test_001）', () => {
-    // `@"…"` 走的是时间构造器，故是 `FEEL_EVAL_TEMPORAL_VALUE` 而非 ARG_TYPE
+  it('`@"…"` 字面量写错 → 仍抛（TCK 0093#test_001，走时间构造器不经过边界转换）', () => {
+    // `@"…"` 走的是时间构造器，故是 `FEEL_EVAL_TEMPORAL_VALUE` 而非被转成 null
     expect(code('@"foo"')).toBe('FEEL_EVAL_TEMPORAL_VALUE');
     // 合法字面量不受影响
     expect(v('string(@"2020-01-01")')).toBe('2020-01-01');

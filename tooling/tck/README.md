@@ -149,7 +149,7 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
      以及把含空格的模型名登记进 `registerSpacedName`（`days in weekend`，TCK 0084#014）。
   ④ 数值判等补**期望字面精度下限**（`exp(-1)` 官方只写 8 位小数，不是引擎算错）。
   ⑤ **IGNORED 机制落地**：`tooling/tck/ignored.json` 登记整组 IGNORED，理由写死在文件里。
-- **第六轮（严格参数校验 —— 该抛错而不是返回 null，严格口径 1926 → 1988）**：
+- **第六轮（严格参数校验，严格口径 1926 → 1988）+ 随后的规范对齐回退**：
   起点是跑分器自己的盲区：宽松 1990 / 严格 1926，中间 64 条全是 `errorResult="true"`
   而我们**返回了 null** —— 被宽松口径盖住，看总分看不出来。故先给跑分器加了
   「严格口径缺口」按组分布的输出（+ `--json` 写 `tmp/tck/loose.json`），再逐组清：
@@ -157,12 +157,23 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
      `arity 0` / 非法 ISO 字面量 → 抛。⚠️ 只在**具名构造器**这条路上抛，`@"P1Y"` 仍给 null。
   ② `**` 只认 number（0075#002~#011，10 条）：判据用**原始值类型**（`num()` 会放宽布尔），
      且必须排在 `l === null || r === null` **之前**，否则类型不符时先被那段"诊断 + null"吃掉。
-  ③ 调用非函数值 → 抛（1131，8 条）：新错误码 `FEEL_EVAL_NOT_CALLABLE`。
+  ③ 调用非函数值 → 抛（1131，8 条）：当时新增错误码 `FEEL_EVAL_NOT_CALLABLE`。
      ⚠️ 裸变量**取值**仍是降级（诊断 + null），只有"调用"才是抛。
   ④ `get value` / `not` / `split` / `matches` / `contains`（0080/0066/0067/1111/1110，17 条）：
      形参有类型，`null` 不符 → 抛。`reqString` 的 `null` 默认抛，只有**可选形参 `flags`** 留 `nullOk`。
   ⑤ `between` / `in <区间>` 的 null 参与、写错的 `@"…"` 字面量（0071/0072/0093，5 条）。
   ⑥ `ignored.json` 新增 `cases`（单条 `label#id`）粒度，安置 `0092#013` 的 decisionService。
+
+  ⚠️ **以上 ①~⑤ 已按规范整体回退**（2026-09-26 用户拍板「必须对齐规范」）：
+  DMN 1.4 §10.3.2.13.1 规定**实参不符参数域 → 结果是 `null`（unknown），不是 error**，
+  feelin v8.2.0 / Camunda(7&8) / Drools(默认) 同此。故**参数/类型类错误改回返回 `null`（+诊断）**，
+  不再抛错。回退后实测：宽松 **1990/1998（99.6%）不变**、严格 **1988 → 1519（76.0%）**，
+  落差即 **471 条 / 50 组 spec-divergence**（TCK 标 `errorResult` 但规范要 null），
+  **判据① 仍零退化**（73/79 组满分，baseline 逐 label 无下降）。
+  配套清理：死码 `FEEL_EVAL_NOT_CALLABLE` 与 `notCallableError()` 已删除 ——
+  非函数值改走**诊断码** `FEEL_EVAL_NO_FUNCTION`（诊断与抛出是两个命名空间）。
+  **仍保留抛错**：`EVAL_UNDEFINED`（函数**结果**无定义）、`@"…"` 构造器字面量语法错、
+  能力未加载 / S-FEEL 白名单越界 / 语法错 / 资源上限。详见 `AGENTS.md` §3 第 3 条。
 
 **已知 gap（6 条，不打算修）**：`1115#015/#016/#029/#030`、`1117#027/#028` 用 9 位年份
 （`999999999`）—— 写法合法但超出 `temporal-polyfill` 可表示范围（±275760），记 `known-gaps`：

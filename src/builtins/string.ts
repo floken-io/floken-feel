@@ -239,31 +239,26 @@ function compileRegex(fnName: string, pattern: string, flags: string, global: bo
   }
 }
 
-/** 取字符串实参（**不接受 null**：这些函数的形参在 DMN 里是非空 string） */
 /**
- * 取字符串实参：类型不符 → 抛；`null` **默认也抛**（`nullOk` 仅给可选参数用）。
+ * 取字符串实参：实参为 `null` 或**非字符串**（如列表/数字）一律返回 `null`
+ * （unknown，对齐 DMN 1.4 §10.3.2.13.1 + feelin）。
  *
- * ★ `null` 这条是 TCK 钉死的：1111 `#fn-null-input matches(null,"pattern")`、
- * `#fn-null-pattern matches("input",null)`，0067 `#008 split(null,null)` / `#008_a`
- * / `#008_b` 全是 `errorResult`。「参数给了 null 就返回 null」是把**类型错误**
- * 当成**未知值** —— 三值语义管的是"值存在但未知"，不是"实参类型不对"。
+ * 调用方据此返回 null，由 `call` 节点边界转换为「诊断 + null」，与 feelin 一致；
+ * 不在此抛错（参考 r6 的"抛错"立场已被用户拍板「必须对齐规范」回退）。
  *
- * ⚠️ `flags` 是**可选**形参（`replace(s, p, r, flags)` 第四个），显式省略与显式
- * 传 null 都按"无标志"处理，故只有它走 `nullOk`。
+ * 可选 `flags` 形参的「null / 省略 → 无标志、非字符串 → 类型错返回 null」由
+ * `matches` / `replace` 在调用点就地处理（不能简单 `?? ''`，否则列表型 flags
+ * 会被误当"无标志"，见 TCK 1111 `K-MatchesFunc-3`）。
  */
 function reqString(
   args: readonly Value[],
   i: number,
   fnName: string,
   param: string,
-  nullOk = false,
 ): string | null {
   const v = args[i] ?? null;
-  if (v === null) {
-    if (nullOk) return null;
-    throw argTypeError(fnName, param, 'string', 'null');
-  }
-  if (typeof v !== 'string') throw argTypeError(fnName, param, 'string', feelTypeName(v));
+  if (v === null) return null;
+  if (typeof v !== 'string') return null;
   return v;
 }
 
@@ -278,17 +273,17 @@ function translateReplacement(rep: string): string {
 export const STRING_BUILTINS: Record<string, NativeFn> = {
   // ----- 判定 -----
   /*
-   * `contains(string, match)`：两个实参都必须是字符串，**null 也抛**
-   * （TCK 1110#001 contains(null,null)、#002 contains(null,"bar")、#003
-   * contains("bar",null) 全是 errorResult）。
+   * `contains(string, match)`：两个实参都必须是字符串；`null` / 非字符串一律**返回 null**
+   * （unknown，对齐 §10.3.2.13.1）。TCK 1110#001~#003 把 `contains(null,...)` 列成 errorResult
+   * （期望抛错）—— 规范/feelin 口径是 null。
    *
-   * ⚠️ `starts with` / `ends with` 仍按 toStr+null 处理：TCK 对它们**没有**
-   * 这类 errorResult 用例，改了既不加分也无从验证，故不动。
+   * ⚠️ `starts with` / `ends with` 仍按 toStr+null 处理：TCK 对它们没有这类 errorResult 用例。
    */
   contains: (a) => {
     requireArity(a, 'contains', 2);
-    const s = reqString(a, 0, 'contains', 'string') as string;
-    const m = reqString(a, 1, 'contains', 'match') as string;
+    const s = reqString(a, 0, 'contains', 'string');
+    const m = reqString(a, 1, 'contains', 'match');
+    if (s === null || m === null) return null;
     return s.includes(m);
   },
   'starts with': (a) => {
@@ -353,25 +348,38 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
   // ----- 正则 -----
   replace: (a) => {
     requireArity(a, 'replace', 3, 4);
-    const s = reqString(a, 0, 'replace', 'input') as string;
-    const pattern = reqString(a, 1, 'replace', 'pattern') as string;
-    const rep = reqString(a, 2, 'replace', 'replacement') as string;
-    // flags 是可选形参：省略 / 显式 null 都按"无标志"
-    const flags = a.length > 3 ? (reqString(a, 3, 'replace', 'flags', true) ?? '') : '';
+    const s = reqString(a, 0, 'replace', 'input');
+    const pattern = reqString(a, 1, 'replace', 'pattern');
+    const rep = reqString(a, 2, 'replace', 'replacement');
+    if (s === null || pattern === null || rep === null) return null;
+    // flags 是可选形参：省略 / 显式 null 都按"无标志"；非字符串实参（如列表）→ 类型错 → null
+    const flagsArg = a.length > 3 ? a[3] : undefined;
+    let flags = '';
+    if (flagsArg !== undefined && flagsArg !== null) {
+      if (typeof flagsArg !== 'string') return null;
+      flags = flagsArg;
+    }
     return s.replace(compileRegex('replace', pattern, flags, true), translateReplacement(rep));
   },
   matches: (a) => {
     requireArity(a, 'matches', 2, 3);
-    const s = reqString(a, 0, 'matches', 'input') as string;
-    const pattern = reqString(a, 1, 'matches', 'pattern') as string;
-    // flags 是可选形参：省略 / 显式 null 都按"无标志"
-    const flags = a.length > 2 ? (reqString(a, 2, 'matches', 'flags', true) ?? '') : '';
+    const s = reqString(a, 0, 'matches', 'input');
+    const pattern = reqString(a, 1, 'matches', 'pattern');
+    if (s === null || pattern === null) return null;
+    // flags 是可选形参：省略 / 显式 null 都按"无标志"；非字符串实参（如列表）→ 类型错 → null
+    const flagsArg = a.length > 2 ? a[2] : undefined;
+    let flags = '';
+    if (flagsArg !== undefined && flagsArg !== null) {
+      if (typeof flagsArg !== 'string') return null;
+      flags = flagsArg;
+    }
     return compileRegex('matches', pattern, flags, false).test(s);
   },
   split: (a) => {
     requireArity(a, 'split', 2);
-    const s = reqString(a, 0, 'split', 'string') as string;
-    const delim = reqString(a, 1, 'split', 'separator') as string;
+    const s = reqString(a, 0, 'split', 'string');
+    const delim = reqString(a, 1, 'split', 'separator');
+    if (s === null || delim === null) return null;
     return s.split(compileRegex('split', delim, '', false));
   },
 

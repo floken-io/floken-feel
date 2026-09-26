@@ -1049,22 +1049,20 @@ function construct(kind: 'date' | 'time' | 'dateTime'): NativeFn {
 /**
  * `duration(from)`：文本 → 时长值。
  *
- * ★ 失败一律**抛**（不是给 null）—— TCK 1120 把每一种坏输入都列成了 `errorResult`：
- * `#001 duration(null)`、`#002 duration()`（arity）、`#042 duration(2017)`、`#044 duration([])`
- * （类型不符）、`#041 ""`、`#045 "P"`、`#046 "P0"`、`#047 "1Y"`、`#048 "1D"`、`#049 "P1H"`、
- * `#050 "P1S"`、`#043 "2012T-12-2511:00:00Z"`（不是合法 ISO 8601 时长字面量）。
+ * ★ 失败一律**返回 null**（unknown）—— 对齐 DMN 1.4 §10.3.2.13.1 与 feelin v8.2.0：
+ * 实参不符参数域（arity 错 / `null` / 非字符串 / 非法 ISO 8601 字面量）的结果是 `null`，不是 error。
+ * TCK 1120 把种种坏输入列成 `errorResult`（期望抛错），但规范口径是 null，feelin 也是 null。
  *
- * ⚠️ 只在**具名构造器**这条路上抛：`@"P1Y"` 字面量与隐式转换仍走 `durationFromText`
- * （`parseText(…, null)` → null），那是"这段文本不是该类型的字面量"，不是类型错误。
+ * ⚠️ 只在**具名构造器**这条路：`@"P1Y"` 字面量与隐式转换仍走 `parseText` → null，
+ * 那是"这段文本不是该类型的字面量"，属同一 unknown 语义。
  */
 function durationFn(): NativeFn {
   const fnName = 'duration';
   return (args) => {
-    requireArity(args, fnName, 1);
+    if (args.length !== 1) return null; // arity 不符 → null
     if (!getTemporal()) return null;
     const v = args[0] ?? null;
-    if (v === null) throw argTypeError(fnName, 'from', 'string', 'null');
-    if (typeof v !== 'string') throw argTypeError(fnName, 'from', 'string', feelTypeName(v));
+    if (typeof v !== 'string') return null; // null / 非字符串 → null（unknown）
     return parseText('duration', v, fnName);
   };
 }
@@ -1076,9 +1074,9 @@ function durationFn(): NativeFn {
  * （否则 `11:22:33` 会被误判成含 `:` 的 date-time）；纯 `YYYY-MM-DD` 是 date；
  * 余下含 `T` 的才是 date-time。
  *
- * ★ 失败一律**抛**（`fnName = '@'`），不是给 null：TCK 0093#test_001 的 `@"foo"`
- * 是 `errorResult`。`@"…"` 是**字面量语法**，写了一个不合规的字面量就是表达式错，
- * 与"运行时值未知"无关 —— 三值语义不覆盖这种情况。
+ * ★ 失败一律**返回 null**（unknown，对齐 feelin：`invalidArguments` 后返回 null）：
+ * TCK 0093#test_001 的 `@"foo"` 列成 `errorResult`（期望抛错），但规范口径与 feelin 都是 null。
+ * `@"…"` 是字面量语法，写错只是"这段文本不是合法字面量"，归入 unknown 语义。
  */
 function atLiteralFn(): NativeFn {
   const fnName = '@';
@@ -1107,8 +1105,8 @@ function durationKindOf(t: FeelTemporal): 'years and months duration' | 'days an
 
 /**
  * 时长分量属性（`.years` `.months` `.days` `.hours` `.minutes` `.seconds`）。
- * **跨类访问按规范抛错**（TCK 0074 的 errorResult 用例），不降级为 null：
- * `duration("P1Y").days` 是错误，而 `duration("P1D").hours` 只是 0。
+ * **跨类访问按规范返回 null**（unknown，对齐 feelin）：TCK 0074 的 errorResult 用例在
+ * 规范口径下应为 null；`duration("P1Y").days` 是 unknown，而 `duration("P1D").hours` 只是 0。
  */
 function durationComponent(name: string): NativeFn {
   const dtOnly = name === 'days' || name === 'hours' || name === 'minutes' || name === 'seconds';
@@ -1179,20 +1177,19 @@ function toDateLike(v: Value): any | null {
 function yearsAndMonthsDuration(args: Value[]): Value {
   const fnName = 'years and months duration';
   /*
-   * ★ 参数校验**抛**而不是返回 null（TCK 1121#001~#007 / #028~#030 全是 errorResult）：
-   * `#001 (null)` `#002 (null,null)` `#003 (date,null)` `#004 (dateTime,null)` `#005 (null,date)`
-   * `#006 (null,dateTime)` `#007 ()`（arity）`#028 (2017)` `#029 ("2012T-…")` `#030 ([],[])`。
-   * 单参 `#001` 由 arity 拦下 —— 该函数按 DMN 1.4 只接受 `from, to` 两参。
+   * ★ 参数校验**返回 null**（unknown，对齐规范 §10.3.2.13.1 + feelin）：
+   * arity 错（`()` / 单参）、`null` 端点、非日期类型（`2017` / `"2012T-…"` / `[]`）——
+   * 结果都是 null，不是 error。TCK 1121 把这些列成 errorResult（期望抛错），但规范口径是 null。
    */
-  requireArity(args, fnName, 2);
+  if (args.length !== 2) return null;
   const T = getTemporal();
   if (!T) return null;
   const from = args[0] ?? null;
   const to = args[1] ?? null;
   const a = toDateLike(from);
-  if (!a) throw argTypeError(fnName, 'from', 'date or date and time', feelTypeName(from));
+  if (!a) return null;
   const b = toDateLike(to);
-  if (!b) throw argTypeError(fnName, 'to', 'date or date and time', feelTypeName(to));
+  if (!b) return null;
   try {
     const base = (b.year - a.year) * 12 + (b.month - a.month);
     const daysInMonth = a.daysInMonth ?? 30;

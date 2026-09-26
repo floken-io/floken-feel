@@ -87,11 +87,6 @@ export const FEEL_ERROR_CODES = {
   EVAL_ARG_RANGE: 'FEEL_EVAL_ARG_RANGE',
   EVAL_UNDEFINED: 'FEEL_EVAL_UNDEFINED',
   EVAL_TEMPORAL_VALUE: 'FEEL_EVAL_TEMPORAL_VALUE',
-  /*
-   * 调用**非函数值**（`null()` / `123()` / `"abs"(-1)` / 未定义名 `foo()`）。
-   * 与诊断码 `FEEL_EVAL_NO_FUNCTION` 是**两个命名空间**：那是"降级可继续"，这是"语义被破坏"。
-   */
-  EVAL_NOT_CALLABLE: 'FEEL_EVAL_NOT_CALLABLE',
 } as const;
 
 /** 诊断码表（不抛，随结果返回） */
@@ -396,26 +391,6 @@ export function durationComponentError(component: string, kind: string): FeelTyp
         : 'days and time duration 只有 .days / .hours / .minutes / .seconds',
     details: { component, kind },
   });
-}
-
-/**
- * 被调者**不是函数**（含"名字根本没绑定"）。
- *
- * ★ 这是 TCK 1131（8 条全是 `errorResult`）钉死的口径：`null()`、`123()`、`true()`、
- * `"some_func"()`、`"abs"(-1)`、`@"2023-11-11"()`、`non_existing_function()` 一律 Err。
- * FEEL 没有"调用非函数值得到 null"这条规则 —— 那是把类型错误当成未知值。
- *
- * ⚠️ 与诊断码 `FEEL_EVAL_NO_FUNCTION` 分属两个命名空间：**抛出码 ≠ 诊断码**。
- */
-export function notCallableError(name: string | null, actualType: string): FeelTypeError {
-  return new FeelTypeError(
-    name ? `'${name}' is not a function` : `Cannot call a value of type ${actualType}`,
-    {
-      code: FEEL_ERROR_CODES.EVAL_NOT_CALLABLE,
-      hint: '调用目标必须是函数（内置名、函数字面量或值为函数的变量）',
-      details: { name, actualType },
-    },
-  );
 }
 
 /** 白名单外函数（S-FEEL）：错误信息必须列出被拒的函数名与当前白名单 */

@@ -82,18 +82,12 @@ describe('floken-feel · F1 between', () => {
   });
 
   /*
-   * ★ `null` 参与区间判定 → **抛**（TCK 0071#null_001~003 全是 errorResult）。
-   * 「比较得不出结果 → null」只适用于**类型对得上但值无法定序**的情形。
+   * ★ `null` 参与区间判定 → **null**（unknown，对齐 DMN 1.4 §10.3.2.13.1 + feelin v8.2.0）。
+   * 「比较得不出结果 → null」适用于类型对得上但值无法定序、以及 null 参与的情形。
    */
-  it('任一端是 null → 抛（TCK 0071 null_001~003）', () => {
+  it('任一端是 null → null（TCK 0071 null_001~003，对齐规范/feelin）', () => {
     for (const src of ['null between 1 and 10', '2 between null and 10', '2 between 1 and null']) {
-      let code = '';
-      try {
-        evaluate(src);
-      } catch (e: any) {
-        code = e?.code ?? '';
-      }
-      expect(code).toBe('FEEL_EVAL_ARG_TYPE');
+      expect(evaluate(src).value).toBe(null);
     }
   });
 

@@ -71,22 +71,19 @@ function putPath(root: FeelContext, keys: readonly string[], value: Value): Feel
 
 export const CONTEXT_BUILTINS: Record<string, NativeFn> = {
   /*
-   * `get value(m, key)`：两个形参都有类型 —— `m` 必须是**上下文**、`key` 必须是**字符串**，
-   * 传 `null` 或其它类型一律**抛**（TCK 0080#005 `get value("foo","foo")`、#006
-   * `get value({a:"foo"},123)`、#009/#010/#011 的 null 组合、#014 的 `input_001 = 12`
-   * 全是 errorResult）。
+   * `get value(m, key)`：`m` 必须是**上下文**、`key` 必须是**字符串**；
+   * 传 `null` / 非上下文 / 非字符串一律**返回 null**（unknown，对齐 DMN 1.4 §10.3.2.13.1
+   * + feelin）。TCK 0080 把种种坏输入列成 `errorResult`（期望抛错），但规范口径是 null。
    *
    * 「键不存在 → null」仍然成立（`c.get(key) ?? null`）：那是"值存在但没这个键"，
-   * 与"实参类型不对"是两回事。
+   * 与"实参类型不对"同属 unknown，统一落 null。
    */
   'get value': (a) => {
     requireArity(a, 'get value', 2);
     const c = a[0] ?? null;
-    if (!isContext(c)) throw argTypeError('get value', 'm', 'context', feelTypeName(c));
+    if (!isContext(c)) return null;
     const key = a[1] ?? null;
-    if (typeof key !== 'string') {
-      throw argTypeError('get value', 'key', 'string', feelTypeName(key));
-    }
+    if (typeof key !== 'string') return null;
     return c.get(key) ?? null;
   },
 

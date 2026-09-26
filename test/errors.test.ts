@@ -123,18 +123,14 @@ describe('floken-feel · 两条通道不许混（AGENTS.md §5.1）', () => {
     expect(typeof r.warnings[0]?.start).toBe('number');
     expect(typeof r.warnings[0]?.end).toBe('number');
     /*
-     * ⚠️ `nope(1)` **不在此列**：裸变量是"取值"（换上下文绑上值就救回了 → 诊断），
-     * 而**调用**是强语义 —— 被调者不是函数就是类型错误（TCK 1131 的 8 条全是
-     * errorResult）。故 `nope`（诊断）与 `nope(1)`（抛）走两条通道，这不是自相矛盾：
-     * 一个是"名字没绑值"，一个是"把非函数当函数调用"。
+     * ⚠️ `nope(1)` 经 call 边界转换 → **null + 诊断**（对齐 DMN 1.4 §10.3.2.13.1 + feelin
+     * v8.2.0）：规范把"调用目标不符参数域"的结果定为 `null`（unknown），不是 error；feelin
+     * 对此 `addWarning('NO_FUNCTION_FOUND')` 后返回 null。故 `nope`（诊断）与 `nope(1)`
+     * （诊断 + null）现在走同一条通道 —— 都不再抛。
      */
-    let code = '';
-    try {
-      evaluate('nope(1)');
-    } catch (e: any) {
-      code = e?.code ?? '';
-    }
-    expect(code).toBe('FEEL_EVAL_NOT_CALLABLE');
+    const rNope = evaluate('nope(1)');
+    expect(rNope.value).toBe(null);
+    expect(rNope.warnings.some((w: { code?: string }) => w.code === 'FEEL_EVAL_NO_FUNCTION')).toBe(true);
     // 注意：`1[1]` **不在此列** —— 非列表基底的下标按 FEEL 10.3.1.8 当单元素列表处理，
     // `1[1]` = 1 是**正常求值**（TCK 0068，2026-09-25 修），不是降级。
     expect(evaluate('1[1]').value).toBe(1);

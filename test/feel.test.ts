@@ -160,19 +160,14 @@ describe('floken-feel · 内置函数', () => {
   });
 
   /*
-   * ★ 调用目标不是函数 → **抛**（TCK 1131 的 8 条全是 errorResult）。
-   * 「调用失败给 null + warning」是把**类型错误**当**未知值**：三值语义管的是
-   * "值存在但未知"，而 `nope(1)` 里被调者根本不是函数 —— 换输入救不回
-   * （除非换一个函数进去，那是换表达式的语义环境，不是换值）。
+   * ★ 调用目标不是函数 → **null + 诊断**（对齐 DMN 1.4 §10.3.2.13.1 + feelin v8.2.0）。
+   * 规范把"调用目标不符参数域"的结果定为 `null`（unknown），不是 error；feelin 对此
+   * `addWarning('NO_FUNCTION_FOUND')` 后返回 null。故 `nope(1)` 经 call 边界转换转成 null。
    */
-  it('未知函数 → 抛 FEEL_EVAL_NOT_CALLABLE（不是降级为 null）', () => {
-    let code = '';
-    try {
-      evaluate('nope(1)');
-    } catch (e: any) {
-      code = e?.code ?? '';
-    }
-    expect(code).toBe('FEEL_EVAL_NOT_CALLABLE');
+  it('未知函数 → null + 诊断 FEEL_EVAL_NO_FUNCTION（对齐规范/feelin，不是抛）', () => {
+    const r = evaluate('nope(1)');
+    expect(r.value).toBe(null);
+    expect(r.warnings.some((w: { code?: string }) => w.code === 'FEEL_EVAL_NO_FUNCTION')).toBe(true);
   });
 });
 
