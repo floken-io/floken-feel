@@ -27,6 +27,23 @@ export function asList(v: Value): Value[] | null {
   return isList(v) ? v : null;
 }
 
+/**
+ * ★ 单例列表 → 元素的隐式转换（DMN 的类型转换规则；TCK **0021-singleton-list** 整组钉死）。
+ *
+ * `upper case(Employees[item = "Bob"])` 里 `Employees[...]` 是 `["Bob"]`，而
+ * `upper case` 的形参是 `string` —— 长度为 1 的列表取其唯一元素
+ * （0021 `decision5` 期望 `"BOB"` 而不是 `null`）。
+ *
+ * ⚠️ **只对"期望标量"的形参生效**：`count` / `sum` / `sublist` 这类形参**本来就是列表**的
+ *   绝不能解包（否则 `count([["a"]])` 会被改成 `count("a")`）。
+ *   故解包放在各个**标量提取器**（`reqNumber` / `reqString` / …）里，
+ *   **不**放在通用调用入口 —— 那会把列表函数的语义一起改坏。
+ */
+export function unwrapSingleton(v: Value): Value {
+  if (Array.isArray(v) && v.length === 1) return v[0] ?? null;
+  return v;
+}
+
 // ---------------- 形参校验 ----------------
 
 /**
@@ -51,7 +68,7 @@ export function reqNumber(
   fnName: string,
   param: string,
 ): number {
-  const v = args[index] ?? null;
+  const v = unwrapSingleton(args[index] ?? null);
   if (typeof v !== 'number' || !Number.isFinite(v)) {
     throw argTypeError(fnName, param, 'number', feelTypeName(v));
   }

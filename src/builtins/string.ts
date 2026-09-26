@@ -8,7 +8,7 @@
 import { isList, type NativeFn, type Value } from '../core/types.js';
 import { argTypeError } from '../core/errors.js';
 import { feelTypeName } from '../core/values.js';
-import { reqNumber, requireArity } from './helpers.js';
+import { reqNumber, requireArity, unwrapSingleton } from './helpers.js';
 
 /** 把 FEEL 的 1-based（可负）起点换算成 0-based 下标 */
 function toIndex(start: number, length: number): number {
@@ -261,7 +261,8 @@ function compileRegex(fnName: string, pattern: string, flags: string, global: bo
  * 会被误当"无标志"，见 TCK 1111 `K-MatchesFunc-3`）。
  */
 function reqString(args: readonly Value[], i: number, fnName: string, param: string): string {
-  const v = args[i] ?? null;
+  // ★ 单例列表解包（TCK 0021 `decision5` 的 `upper case(Employees[item = "Bob"])`）
+  const v = unwrapSingleton(args[i] ?? null);
   if (v === null || typeof v !== 'string') {
     throw argTypeError(fnName, param, 'string', feelTypeName(v));
   }
