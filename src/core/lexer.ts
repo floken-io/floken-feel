@@ -247,16 +247,19 @@ export function tokenize(src: string): Token[] {
       continue;
     }
 
-    // 名字 / 关键字（含 `-` 连字符，见 `NAME_PART` 上的说明）
+    /*
+     * 名字 / 关键字。
+     *
+     * ★ **`-` 不在这里并入名字**（曾经并入，是错的）。`a-b` 到底是"一个名字"还是
+     *   "相减"，**词法层无从判断**：TCK 0007 的 `Date-Time` 是一个名字，
+     *   TCK 0035 的 `(1-Rn-Kn) / (1-Kn)` 是相减，两者写法完全一样。
+     *   规范给的判据是「按作用域取最长匹配」，而作用域只有到求值前才存在 ——
+     *   故这里只产出 `name` `-` `name`，由 `core/name-merge.ts` 拿着作用域去合并。
+     */
     if (NAME_START.test(ch)) {
       const start = i;
       let end = i;
       while (end < len && NAME_PART.test(src.charAt(end))) end += 1;
-      // `a-b-c`：`-` 可重复出现，合并后继续吞名字段
-      while (src.charAt(end) === '-' && NAME_START.test(src.charAt(end + 1))) {
-        end += 1;
-        while (end < len && NAME_PART.test(src.charAt(end))) end += 1;
-      }
       i = end;
       const word = src.slice(start, i);
       tokens.push(

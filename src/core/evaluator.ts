@@ -1341,10 +1341,14 @@ export function evaluate(
 ): EvalResult {
   assertOptions(options);
   const warnings: Diagnostic[] = [];
-  const node = parseExpression(src);
+  /*
+   * ★ 先把 context 建出来，**再**解析 —— 名字合并要拿作用域做歧义消解
+   *   （`a-b` 是一个名字还是相减，见 `core/name-merge.ts`）。
+   */
+  const ctx = toFeelContext(context);
+  const node = parseExpression(src, { knownNames: new Set(ctx.keys()) });
   enforceLimits(node, options);
   const runtime = buildRuntime(options);
-  const ctx = toFeelContext(context);
   const value = evaluateNode(node, ctx, warnings, options.builtins ?? BUILTINS, runtime);
   return { value, warnings };
 }
@@ -1384,10 +1388,10 @@ export function unaryTest(
 ): EvalResult {
   assertOptions(options);
   const warnings: Diagnostic[] = [];
-  const terms = parseUnaryTests(src);
+  const ctx = toFeelContext(context);
+  const terms = parseUnaryTests(src, { knownNames: new Set(ctx.keys()) });
   for (const term of terms) enforceLimits(term, options);
   const runtime = buildRuntime(options);
-  const ctx = toFeelContext(context);
   const results = terms.map((t) =>
     evalUnaryTerm(t, ctx, warnings, options.builtins ?? BUILTINS, runtime),
   );

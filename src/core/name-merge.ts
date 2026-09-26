@@ -35,6 +35,11 @@ function isPlainName(t: Token | undefined): boolean {
   return !!t && t.type === 'name' && t.value !== '?' && t.value !== '';
 }
 
+/** 取 token 文本（**不做类型收窄**，收窄到 `Token` 会把否定分支推成 `never`） */
+function val(t: Token | undefined): string {
+  return t?.value ?? '';
+}
+
 /**
  * 允许出现在名字**中间**的关键字（DMN 1.5 §10.3.1.1：多数关键字可作名字的中间字符）。
  *
@@ -58,6 +63,52 @@ const NAME_INNER_KEYWORDS: ReadonlySet<string> = new Set([
 /** 名字尾部可吸收的数字（`decision A 2.1` / `Extra days case 1`，见文件头 ★） */
 function isTrailingNum(t: Token | undefined): boolean {
   return t?.type === 'num';
+}
+
+/** 两个 token 在源码里**紧邻**（中间没有空白）—— `a-b` 紧邻，`a - b` 不是 */
+function adjacent(a: Token | undefined, b: Token | undefined): boolean {
+  return !!a && !!b && a.end === b.start;
+}
+
+/**
+ * 从 `i` 起贪心地把名字加长，返回合并后的「末下标 + 文本」。
+ *
+ * 每段可以是：一个 `name`、一个可夹在名字中间的关键字、一个尾随数字，
+ * 或一个**紧邻**的 `-` + 名字（`Date-Time`，仅 `allowHyphen` 时）。
+ *
+ * ★ 为什么空格段**无条件**合并：`start position`、`end included`、`b c`、
+ *   `Mike's daughter` 都**没有第二种读法** —— 两个值之间没有运算符本就是语法错。
+ *   只有 `-` 是真的两义（`Date-Time` 是名字，`Rn-Kn` 是相减），故单独开关。
+ */
+function growOnce(tokens: Token[], i: number, allowHyphen: boolean): { end: number; text: string } {
+  let j = i;
+  let text = val(tokens[i]);
+  for (;;) {
+    const next = tokens[j + 1];
+    const after = tokens[j + 2];
+    if (isPlainName(next)) {
+      j += 1;
+      text += ` ${val(next)}`;
+      continue;
+    }
+    if (isTrailingNum(next)) {
+      j += 1;
+      text += ` ${val(next)}`;
+      continue;
+    }
+    if (next?.type === 'kw' && NAME_INNER_KEYWORDS.has(val(next)) && (isPlainName(after) || isTrailingNum(after))) {
+      j += 2;
+      text += ` ${val(next)} ${val(after)}`;
+      continue;
+    }
+    if (allowHyphen && next?.type === 'op' && val(next) === '-' && adjacent(tokens[j], next) && isPlainName(after)) {
+      j += 2;
+      text += `-${val(after)}`;
+      continue;
+    }
+    break;
+  }
+  return { end: j, text };
 }
 
 function textOf(tokens: Token[], from: number, to: number): string {
@@ -91,6 +142,7 @@ function matchSpaced(tokens: Token[], i: number, spaced: ReadonlySet<string>): n
 export function mergeNames(
   tokens: Token[],
   spaced: ReadonlySet<string> = SPACED_NAMES,
+  knownNames?: ReadonlySet<string>,
 ): Token[] {
   const out: Token[] = [];
   let i = 0;
@@ -112,32 +164,31 @@ export function mergeNames(
       continue;
     }
 
-    // 规则 2：通用名字合并（相邻 `name` token，并吸收紧随其后的数字）
+    // 规则 2：通用名字合并（相邻 name / 夹在中间的关键字 / 尾随数字）
     if (isPlainName(t)) {
-      let j = i;
-      const eatNames = () => {
-        while (isPlainName(tokens[j + 1])) j += 1;
-        while (isTrailingNum(tokens[j + 1])) j += 1;
-      };
-      eatNames();
-      // 名字中间的关键字：`Years of Service`
-      while (
-        tokens[j + 1]?.type === 'kw' &&
-        NAME_INNER_KEYWORDS.has(tokens[j + 1]?.value ?? '') &&
-        (isPlainName(tokens[j + 2]) || isTrailingNum(tokens[j + 2]))
-      ) {
-        j += 1;
-        eatNames();
-      }
-      if (j > i) {
-        const last = tokens[j];
+      const safe = growOnce(tokens, i, false);
+      /*
+       * ★ 只有**跨连字符**的那一段才需要查作用域（DMN 1.5 §10.3.1.1 的
+       *   "the longest name matched in scope"）：
+       *   - `Date-Time` 在作用域里 → 是一个名字（TCK 0007）；
+       *   - `Rn-Kn` 不在 → 是相减（TCK 0035 的 `(1-Rn-Kn) / (1-Kn)`）。
+       *
+       * ⚠️ 反过来**不能**用作用域去裁决空格段：作用域里已有的**短名**会把
+       *   `end included` 截成 `end` + `included`（TCK 0074 的上下文里确实先绑了
+       *   `end`），于是区间属性整组塌掉。空格段没有第二种读法，照旧合并。
+       */
+      let chosen = safe;
+      const full = growOnce(tokens, i, true);
+      if (full.end > safe.end && (!knownNames || knownNames.has(full.text))) chosen = full;
+      if (chosen.end > i) {
+        const last = tokens[chosen.end];
         out.push({
           type: 'name',
-          value: textOf(tokens, i, j),
+          value: chosen.text,
           start: t.start,
           end: last ? last.end : t.end,
         });
-        i = j + 1;
+        i = chosen.end + 1;
         continue;
       }
     }

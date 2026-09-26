@@ -57,6 +57,13 @@ export const INSTANCE_TYPES: ReadonlySet<string> = new Set([
 export interface ParseOptions {
   /** 覆盖「需合并的多词名」表（默认取 `core/spaced-names` 的全局表） */
   spacedNames?: ReadonlySet<string>;
+  /**
+   * **作用域里的名字**（`evaluate` 传入的 context 的键）—— 歧义消解用。
+   * `a-b` / `a b` 到底是"一个名字"还是"相减 / 两个值"，规范给的判据就是
+   * 「按作用域取最长匹配」（§10.3.1.1），没有它只能猜（见 `core/name-merge.ts`）。
+   * 不传时退回"尽量合并"，仅供高亮等无作用域场景使用。
+   */
+  knownNames?: ReadonlySet<string>;
 }
 
 class Parser {
@@ -801,17 +808,19 @@ type TokenTypeUnion = Token['type'];
  * 1. 剔除注释（词法始终产出 `comment` token 供高亮用，语法不关心）；
  * 2. 合并名字（与高亮共用 `core/name-merge.ts`，保证边界一致）。
  */
-function significant(src: string, spaced: ReadonlySet<string>): Token[] {
+function significant(src: string, spaced: ReadonlySet<string>, knownNames?: ReadonlySet<string>): Token[] {
   const tokens = tokenize(src).filter((t) => t.type !== 'comment');
-  return mergeNames(tokens, spaced);
+  return mergeNames(tokens, spaced, knownNames);
 }
 
 /** 解析一个完整 FEEL 表达式 */
 export function parseExpression(src: string, opts: ParseOptions = {}): Node {
-  return new Parser(significant(src, opts.spacedNames ?? SPACED_NAMES), src).parse();
+  const spaced = opts.spacedNames ?? SPACED_NAMES;
+  return new Parser(significant(src, spaced, opts.knownNames), src).parse();
 }
 
 /** 解析 unary tests（决策表输入项），返回测试项数组（逗号 = OR） */
 export function parseUnaryTests(src: string, opts: ParseOptions = {}): Node[] {
-  return new Parser(significant(src, opts.spacedNames ?? SPACED_NAMES), src).parseTests();
+  const spaced = opts.spacedNames ?? SPACED_NAMES;
+  return new Parser(significant(src, spaced, opts.knownNames), src).parseTests();
 }
