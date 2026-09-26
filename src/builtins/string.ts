@@ -135,8 +135,7 @@ function findSubtraction(body: string, from: number): number {
  * 实现 XPath 的 `x` 模式：字符类**之外**的空白全部忽略，`#` 起注释到行尾。
  * 转义序列与字符类内部（`[a b]`）原样保留。
  *
- * ⚠️ 转义空白要落成 `\x20` 而不是 ` `：最终正则恒带 `u`，而 `u` 模式下
- * `\ `（转义一个非语法字符）是**语法错误** —— TCK `K2-MatchesFunc-1` 的 `hello\ sworld`。
+ * ⚠️ x 模式下 `\` 后面的空白**同样折叠**（不是"转义保留"）—— 见下面 `c === '\\'` 分支的注释。
  */
 function freeSpacing(pattern: string): string {
   let out = '';
@@ -145,8 +144,18 @@ function freeSpacing(pattern: string): string {
     const c = pattern[i] ?? '';
     if (c === '\\') {
       const nxt = pattern[i + 1];
+      /*
+       * ★ x 模式下 `\` **后面的空白同样被折叠**，只保留 `\` 本身。
+       *
+       * TCK `K2-MatchesFunc-1`（description：「Whitespace in the regexp is collapsed」）：
+       * `matches("hello world", "hello\ sworld", "x")` 期望 **true** ——
+       * 折叠掉空格后模式串是 `hello\sworld`，`\s` 是空白字符类，正好匹配中间的空格。
+       *
+       * ⚠️ 反过来把 `\ ` 当成"转义的字面空格"落 `\x20` 会得到 `hello sworld` → false，
+       * 与官方期望相反。（Java `Pattern.COMMENTS` 的「转义空白保留」口径在此不适用。）
+       */
       if (nxt !== undefined && /\s/.test(nxt)) {
-        out += `\\x${nxt.codePointAt(0)?.toString(16).padStart(2, '0') ?? '20'}`;
+        out += c;
       } else {
         out += c + (nxt ?? '');
       }

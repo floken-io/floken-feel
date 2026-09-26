@@ -323,10 +323,34 @@ describe('floken-feel · TCK 修复回归 · 时间构造器重载与写法（11
     }
   });
 
-  it('超出实现源可表示范围的年份 → null（known-gap，不是错误）', () => {
-    // `999999999` 是合法 FEEL 写法，但 Temporal 只到 ±275760
-    expect(evaluate('date("999999999-12-31")').value).toBe(null);
-    expect(evaluate('date(999999999, 12, 31)').value).toBe(null);
+  it('扩展年（|year| > 275760）可构造、string() 原样输出（1115#015/#016/#029/#030）', () => {
+    /*
+     * 曾经是 known-gap（给 null）。现按 TCK 要求实现：Temporal 只到 ±275760，
+     * 但 ISO 8601 扩年与 FEEL 都无此上限，故走 `extendedYear()` 兜底 —— 不经过
+     * Temporal（`raw` 为 null），`iso` 直接用规范化原文。
+     */
+    expect(evaluate('string(date("999999999-12-31"))').value).toBe('999999999-12-31');
+    expect(evaluate('string(date("-999999999-12-31"))').value).toBe('-999999999-12-31');
+    expect(evaluate('string(date(999999999, 12, 31))').value).toBe('999999999-12-31');
+    expect(evaluate('string(date(-999999999, 12, 31))').value).toBe('-999999999-12-31');
+    // 1117#027/#028：日期时间的扩展年同样原样输出
+    expect(
+      evaluate('string(date and time("999999999-12-31T23:59:59.999999999@Europe/Paris"))').value,
+    ).toBe('999999999-12-31T23:59:59.999999999@Europe/Paris');
+    expect(
+      evaluate('string(date and time("-999999999-12-31T23:59:59.999999999+02:00"))').value,
+    ).toBe('-999999999-12-31T23:59:59.999999999+02:00');
+
+    /* 兜底**不是**放宽校验：月/日/时刻照旧自己校验，非法写法仍抛（日期没有 2 月 30 日，
+     * 年份 10 位是非法写法）。这一点由 `extendedYear()` 自己守，Temporal 帮不上忙。 */
+    nullDiag('date("999999999-02-30")', 'FEEL_EVAL_TEMPORAL_VALUE');
+    nullDiag('date("999999999-13-01")', 'FEEL_EVAL_TEMPORAL_VALUE');
+    nullDiag('date("9999999999-12-31")', 'FEEL_EVAL_TEMPORAL_VALUE');
+    nullDiag('date(999999999, 2, 30)', 'FEEL_EVAL_TEMPORAL_VALUE');
+
+    // 运算退回 null，不得崩（底层对象为 null 时 `shiftByDuration` / 属性访问都退 null）
+    expect(evaluate('date("999999999-12-31") + duration("P1D")').value).toBe(null);
+    expect(evaluate('date("999999999-12-31").year').value).toBe(null);
   });
 });
 

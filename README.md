@@ -131,26 +131,27 @@ evaluate('now()', ctx, {
 
 ---
 
-## 1.3 TCK 口径与当前成绩（2026-09-25 首跑；2026-09-26 第七轮 · 错误双模式）
+## 1.3 TCK 口径与当前成绩（2026-09-25 首跑；2026-09-26 第八轮 · **双口径 100%**）
 
 本包用 **DMN TCK 的 B 口径**自证：官方 **79 个 FEEL label**（`TestCases/*/*-feel-*`），共 **2053 条断言**。
 
-其中 **57 条按 NFR-F14 登记 IGNORED**（`tooling/tck/ignored.json`，理由逐条写死）——它们不是"我们做错了"，
+其中 **58 条按 NFR-F14 登记 IGNORED**（`tooling/tck/ignored.json`，理由逐条写死）——它们不是"我们做错了"，
 而是**该断言考的能力不属于 FEEL 表达式层**，或 **TCK 自身矛盾**：`0076-feel-external-java`（18 条，Java 绑定要 JVM）、
 `0082-feel-coercion`（36 条，考的是 DMN 声明类型与值之间的强制转换，归属 `floken-dmn`），
-外加单条 `0092#013`（decisionService 调用，与 0082 同族）与 `0057#009/#010`
-（`{a:1}.b` / `null.b`：description 写 "results in null" 却标 `errorResult`，从规范）。
-IGNORED 不进任何口径的分子分母，单独记 ⊘，故**计入口径是 1996 条**。
+外加单条 `0057#009/#010`（`{a:1}.b` / `null.b`：description 写 "results in null" 却标 `errorResult`，从规范）、
+`0092#013`（decisionService 调用，与 0082 同族）、`0092#009`（**boxed context 的 result entry**，
+跑分器摊平成 FEEL 文本时丢了这一层 → 提取器失真）。
+IGNORED 不进任何口径的分子分母，单独记 ⊘，故**计入口径是 1995 条**。
 
-### ★ 两套口径，两个入口 —— 不用二选一
+### ★ 两套口径，两个入口 —— 不用二选一，且都是 100%
 
 规范（DMN 1.4 §10.3.2.13.1：实参不符参数域 → 结果是 `null`）与 TCK（`errorResult="true"`：
 期望抛错）长期冲突。本包**同时满足两者**，把选择权交给调用方：
 
 | 入口 | `errorMode` | 语义 | 分数 |
 |---|---|---|---|
-| `evaluate(src)` | `'null'`（**默认**） | 规范语义：`null` + 诊断 | 宽松 **1988/1996（99.6%）** |
-| `evaluateStrict(src)` | `'throw'` | TCK 严格口径：抛 `FeelError` | 严格 **1988/1996（99.6%），`errorResult` 缺口 0** |
+| `evaluate(src)` | `'null'`（**默认**） | 规范语义：`null` + 诊断 | **1995/1995（100.0%）** |
+| `evaluateStrict(src)` | `'throw'` | TCK 严格口径：抛 `FeelError` | **1995/1995（100.0%）**，`errorResult` 缺口 0 |
 
 ```ts
 evaluate('abs(null)')        // { value: null, warnings: [{ code: 'FEEL_EVAL_ARG_TYPE', ... }] }
@@ -164,15 +165,20 @@ evaluateStrict('abs(null)')  // throw FeelTypeError  code: 'FEEL_EVAL_ARG_TYPE'
 ⚠️ 两种模式**都抛**（不受开关影响）：`@"…"` 构造器字面量语法错、能力未加载 /
 S-FEEL 白名单越界 / 语法错 / 资源上限。
 
-79 组中 **73 组满分**；基线**两套分开存**：`baseline.labels.json`（默认）与
-`baseline.labels.strict.json`（严格），重跑后任一组低于它即判退化。
+79 组中 **77 组满分**（另 2 组整组 IGNORED），**0 组有失败**；基线**两套分开存**：
+`baseline.labels.json`（默认）与 `baseline.labels.strict.json`（严格），重跑后任一组低于它即判退化。
 
-**已知 gap（8 条，不打算修）** —— 两种模式都存在，**是"值算错"不是"该抛没抛"**
-- `1115#015/#016/#029/#030`、`1117#027/#028`（6 条）用的是 9 位年份（`999999999-12-31`）——
-  写法合法，但超出 `temporal-polyfill` 可表示范围（±275760），按 `known-gaps` 记：
-  给 `null` 而不是抛错（见 `05-包需求-floken-feel.md` §7.5）。
-- `0092#009`、`1111#K2-1`（2 条）是 **TCK 自身矛盾**
-  （`description` 与 `errorResult` 打架，或与别的组冲突）→ **从规范**，不强行适配（§7.8）。
+**第八轮清掉的 8 条 mismatch**（此前记为"值算错，与错误模式无关"，现已全部归零）：
+
+| 缺口 | 根因 | 处置 |
+|---|---|---|
+| `1111#K2-1`（1） | x 模式下把 `\ ` 当成"转义的字面空格"（照搬 Java `Pattern.COMMENTS`），与 TCK 相反 | 照 `description`「Whitespace… is **collapsed**」折叠 → `hello\sworld`（`\s` 空白字符类）→ true |
+| `1115`×4 / `1117`×2（6） | 9 位年份超出 `temporal-polyfill` 范围（±275760） | 新增 `extendedYear()`：**不经过 Temporal**（`raw` 为 `null`、`iso` 用原文），`string()` 原样输出；运算退回 `null`；月/日/闰年我们自己校验，非法写法照旧抛 |
+| `0092#009`（1） | 判成"TCK 自相矛盾"是**臆断** —— 回原始 `.dmn` 看，它是 **boxed context 的 result entry**，而 `0057#007` 的 `{"": "foo"}` 是 FEEL 字面量的合法空键名 | 属**提取器失真** → 按 `label#id` 登记 IGNORED（若改 FEEL 语义，`0057#007` 会立刻翻车，+1 −1 = 0） |
+
+> ⚠️ **「2053」与「1995」的关系**：2053 = 79 个 FEEL label 的**全部断言**（一条没少）；
+> 1995 = 2053 − 58 IGNORED，是**计分基数**。IGNORED 既不进分子也不进分母，故分数是 100%。
+> 另：**3495 / 3391 是 A 口径**（完整 DMN TCK，含决策表与 DRG 遍历），归 `floken-dmn`，**不是本包的账**。
 
 > ⚠️ **别拿 `3391 / 3495` 来问本包** —— 那是 **A 口径**（完整 DMN TCK，含 DRG 遍历 / 决策表 / 命中策略），
 > 归属于 `floken-dmn`；本包没有 DMN 引擎，跑不出来。本包能自证的官方上限就是上面这 2053。

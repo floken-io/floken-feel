@@ -177,7 +177,11 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
 
 **已知 gap（6 条，不打算修）**：`1115#015/#016/#029/#030`、`1117#027/#028` 用 9 位年份
 （`999999999`）—— 写法合法但超出 `temporal-polyfill` 可表示范围（±275760），记 `known-gaps`：
-给 `null`，不抛错。另有 2 条 **TCK 自身矛盾**（`1111#K2-1`、`0092#009`）→ 从规范，不强行适配。
+给 `null`，不抛错。另有 2 条判为 **TCK 自身矛盾**（`1111#K2-1`、`0092#009`）→ 从规范，不强行适配。
+
+> ✅ **以上 8 条已在第八轮全部清零**（口径有修正，见下面第八轮条目）：
+> 6 条扩展年靠 `extendedYear()` 修好；`1111#K2-1` 不是冲突而是我们的正则方言 bug；
+> `0092#009` 经查原始 `.dmn` 认定是**提取器失真**（boxed context 的 result entry），登记 IGNORED。
 
 - **第七轮（★ 错误双模式：规范 `null` 与 TCK `throw` 不再二选一，严格 1519 → 1988）**：
   上一轮把参数/类型类错误钉成返回 `null`（规范），代价是严格口径掉到 1519（76.0%）、
@@ -210,7 +214,34 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
   恢复错误码 `FEEL_EVAL_NOT_CALLABLE`（严格模式下"调用非函数值"要抛；默认模式仍走
   诊断码 `FEEL_EVAL_NO_FUNCTION` —— **两个命名空间，不重叠**）。
 
-**已知最大缺口（下一轮按此顺序）**：见 `05-包需求-floken-feel.md` §7.4 的清单。
+- **第八轮（★ 清尾 8 条 mismatch → 双口径 100%，1995/1995）**：
+  第七轮后 `errorResult` 维度已满分，但还剩 8 条 **mismatch**（值算错，与"该抛没抛"无关，
+  两种模式都存在）。本轮逐条清零：
+
+  ① `1111#K2-1`（1 条）：`matches("hello world", "hello\ sworld", "x")` 期望 `true`。
+     此前把 `\ ` 当"转义的字面空格"落 `\x20`（照搬 Java `Pattern.COMMENTS`）→ 得到
+     `hello sworld` → false，**与官方相反**。该用例 `description` 明写
+     「Whitespace in the regexp is **collapsed**」：折叠后是 `hello\sworld`，
+     `\s` 才是空白字符类。⚠️ **别照搬别的语言的同名语义**，判据只能是 TCK 原文。
+  ② 扩展年 6 条（`1115`×4 / `1117`×2）：新增 `extendedYear()` /
+     `extendedYearComponents()` —— `|year| > 275760` 时**不经过 Temporal**
+     （`wrap(kind, null, src, z, iso)`，`raw` 为 `null`、`iso` 用规范化原文），
+     故 `string()` 完全正确；运算（`± duration` / 分量属性 / 日期迭代）退回 `null`。
+     月 1–12、日 1–当月天数（自实现闰年）、时刻 `validTimeText` **由我们自己校验**，
+     非法写法（`999999999-02-30`、`9999999999-12-31`）照旧抛。
+     ⚠️ 两处正则要认 `+`：`convertYear` 会把 5–9 位年补成 `+999999999-…`，
+     只写 `-?` 的症状是**正年不通、负年反而通**，很有迷惑性。
+  ③ `0092#009`（1 条）：此前判成"TCK 自相矛盾"是**臆断**。回原始 `.dmn` 看，
+     它是 **boxed context**（第二个 `<contextEntry>` 没有 `<variable>` = DMN 的
+     **result entry**），而 `0057#007` 的 `{"": "foo"}` 是 FEEL 字面量的合法空键名。
+     两条**不矛盾**，是跑分器摊平 boxed context 时丢了这一层 → **提取器失真**，
+     按 `label#id` 登记 IGNORED（改 FEEL 语义会让 `0057#007` 翻车，+1 −1 = 0）。
+
+  实测：计入 **1995**（2053 − 58 IGNORED），**两套口径都是 1995/1995（100.0%）**，
+  **0 组有失败**（79 组中 77 组满分，另 2 组整组 IGNORED）；`vitest` **209 passed**；
+  双基线各自刷新，两套口径均零退化。
+
+**已知最大缺口**：无 —— 计入口径已 100%。后续若 TCK 语料升级，按本文件 §五 的方法论重跑即可。
 
 ## 六、基线怎么用
 

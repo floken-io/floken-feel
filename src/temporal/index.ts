@@ -569,27 +569,90 @@ const OFFSET_LIMIT_HOURS = 18;
  * FEEL 照 ISO 8601 写年份：4 位（`2017`）、5–9 位（`99999`，**不许前导零、不许 `+` 号**）、可负（`-2017`）。
  * Temporal 只认 4 位或 6 位带符号扩年，故 5–9 位要补足 6 位并补 `+`。
  *
- * 返回 `'invalid'` = 写法非法（具名构造器抛 `EVAL_TEMPORAL_VALUE`）；
- * 返回 `'overflow'` = 写法合法但超出实现源可表示范围（给 `null`，登记 `known-gaps`）。
+ * 返回 `'invalid'` = 写法非法（具名构造器抛 `EVAL_TEMPORAL_VALUE`）。
  *
- * 四条判据都由 TCK 钉死：`998-12-31`（3 位）/ `01211-12-31`（前导零）/ `9999999999-12-25`（10 位）/
- * `+2012-12-02`（正号）全 `errorResult`；而 `99999-12-31T11:22:33` 必须解析得出来（1117#011）。
+ * ⚠️ 年份**不在此封顶**：`|year| > 275760` 的写法本身合法（ISO 8601 允许任意位扩年，
+ * FEEL 未设上限），只是 Temporal 表示不了 —— 由 `extendedYear()` 兜底构造，见那里。
+ * 年份位数（3 位过短 / 10 位过长 / 前导零）才是**写法**问题，照旧判非法。
+ *
+ * 判据由 TCK 钉死：`998-12-31`（3 位）/ `01211-12-31`（前导零）/ `9999999999-12-25`（10 位）/
+ * `+2012-12-02`（正号）全 `errorResult`；而 `99999-12-31T11:22:33` 必须解析得出来（1117#011），
+ * `999999999-12-31` 也要解析得出来（1115#015）。
  *
  * ⚠️ 注意本函数的正则**只接受可选负号** —— `+2012-…` 因此直接判非法（不进入后面的补位逻辑）。
  */
-function convertYear(text: string): string | 'invalid' | 'overflow' {
+function convertYear(text: string): string | 'invalid' {
   const m = /^(-?)(\d+)-(\d{2})-(\d{2})([\s\S]*)$/.exec(text);
   if (!m) return 'invalid';
   const neg = m[1] === '-';
   const digits = m[2] ?? '';
   if (digits.length < 4 || digits.length > 9) return 'invalid';
   if (digits.length > 4 && digits.startsWith('0')) return 'invalid';
-  if (Number(digits) > YEAR_LIMIT) return 'overflow';
   const tail = `-${m[3]}-${m[4]}${m[5] ?? ''}`;
   // 负年即使是 4 位也要写扩年：Temporal 的**文本解析**只认 4 位**正**年，
   // `-2016-01-30` 会直接拒收（`{year:-2016}` 的对象形态才接受）—— 故负年一律补足 6 位。
   if (digits.length === 4 && !neg) return `${digits}${tail}`;
   return `${neg ? '-' : '+'}${digits.padStart(6, '0')}${tail}`;
+}
+
+/** 格里高利闰年（对任意年份成立，含远超 Temporal 范围的扩年） */
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  return [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 31;
+}
+
+/**
+ * ★ **扩展年**兜底：构造 `|year| > 275760` 的日期 / 日期时间值。
+ *
+ * `temporal-polyfill` 按 Temporal 规范把可表示范围封在 ±275760，超出即抛 RangeError；
+ * 但 ISO 8601 的扩年没有这个上限，FEEL 也没设 —— TCK 明确要求这类值**构造得出来**：
+ * `string(date("999999999-12-31"))` = `"999999999-12-31"`（1115#015/#016/#029/#030）、
+ * `string(date and time("999999999-12-31T23:59:59.999999999@Europe/Paris"))` 原样返回（1117#027/#028）。
+ *
+ * 故这里**不经过 Temporal**：`raw` 为 `null`，`iso` 直接用规范化后的原文。
+ * 代价与边界（都是"退回 null"，不会崩 —— 见各函数的 `raw?.` 防御）：
+ * - 一切需要底层对象的**运算**不可用：`date ± duration`、日期分量属性、日期迭代序列；
+ * - 比较与相等退化为**文本序**（同为 4 位以上扩年时仍正确，跨位数不保证）；
+ * - `string()`（TCK 实际考的）与 `is()` 完全正确。
+ *
+ * 月份/日/时刻的合法性此处**自己校验**（Temporal 帮不上忙）：
+ * 月 1–12、日 1–当月天数（含闰年）、时刻复用 `validTimeText`。
+ *
+ * 返回 `null` = 不是扩展年（或写法非法）→ 调用方按原路径 `shapeFail`。
+ */
+function extendedYear(
+  kind: 'date' | 'dateTime',
+  head: string,
+  src: string,
+  z: ZoneInfo,
+): FeelTemporal | null {
+  // ⚠️ 两处都要认 `+`：走过 `convertYear` 后 5–9 位年一律带正号（`+999999999-…`）
+  const ym = /^([+-]?\d+)-/.exec(head);
+  if (ym === null || Math.abs(Number(ym[1])) <= YEAR_LIMIT) return null;
+  const local = kind === 'date' ? head : localTimeOf(head);
+  const t = local.indexOf('T');
+  const datePart = t < 0 ? local : local.slice(0, t);
+  if (t >= 0 && !validTimeText(local.slice(t + 1))) return null;
+  const dm = /^([+-]?\d{4,9})-(\d{2})-(\d{2})$/.exec(datePart);
+  if (dm === null) return null;
+  const year = Number(dm[1]);
+  const month = Number(dm[2]);
+  const day = Number(dm[3]);
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  return wrap(kind, null, src, z, `${normalizeYearText(local)}${zoneSuffix(z)}`);
+}
+
+/** `date(<y>, <m>, <d>)` 的扩展年分量式（同上，只是文本由分量拼出） */
+function extendedYearComponents(year: number, month: number, day: number): FeelTemporal | null {
+  if (Math.abs(year) <= YEAR_LIMIT) return null;
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)) return null;
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return wrap('date', null, undefined, undefined, `${year}-${pad(month)}-${pad(day)}`);
 }
 
 /**
@@ -703,7 +766,6 @@ function parseText(kind: FeelTemporal['kind'], raw: string, fnName: string | nul
   // 年份只对"看起来像日期"的串动手（`11:22:33` 这类不能被误判成年份）
   if (kind !== 'time' && /^-?\d+-\d{2}-\d{2}/.test(head)) {
     const conv = convertYear(head);
-    if (conv === 'overflow') return null; // 写法合法、但超出实现源可表示范围
     if (conv === 'invalid') return shapeFail(fnName, src, expected);
     head = conv;
   }
@@ -723,6 +785,8 @@ function parseText(kind: FeelTemporal['kind'], raw: string, fnName: string | nul
     try {
       return wrap('date', T.PlainDate.from(head), src);
     } catch {
+      const ext = extendedYear('date', head, src, z);
+      if (ext !== null) return ext;
       return shapeFail(fnName, src, expected);
     }
   }
@@ -734,6 +798,8 @@ function parseText(kind: FeelTemporal['kind'], raw: string, fnName: string | nul
     if (z.zone !== null) return wrap('dateTime', T.ZonedDateTime.from(`${local}[${z.zone}]`), src);
     return wrap('dateTime', T.PlainDateTime.from(local), src);
   } catch {
+    const ext = extendedYear('dateTime', head, src, z);
+    if (ext !== null) return ext;
     return shapeFail(fnName, src, expected);
   }
 }
@@ -928,7 +994,8 @@ function dateOfComponents(yv: Value, mv: Value, dv: Value, fnName: string): Valu
   try {
     return wrap('date', T.PlainDate.from({ year, month, day }));
   } catch {
-    if (Math.abs(year) > YEAR_LIMIT) return null; // 写法合法、实现源表示不了
+    const ext = extendedYearComponents(year, month, day);
+    if (ext !== null) return ext; // 写法合法、只是超出实现源范围
     throw temporalValueError(fnName, {
       component: `date(${year}, ${month}, ${day})`,
       expected: 'date',

@@ -18,6 +18,7 @@
   "cases": {
     "0057-feel-context#009": "TCK 自身矛盾 → 从规范（DMN 1.4 §10.3.2.9 / §10.3.4.6）：`{ a: 1 }.b` 是**路径表达式取不存在的键**，规范口径是 `null`（unknown），且本组同批的 `#007` 等用例正是这么判的；这里却挂了 `errorResult=\"true\"`。取不存在的键返回 null 是 FEEL 的核心语义（上下文是稀疏映射，不是强类型结构），不能为凑 errorResult 改成抛错。",
     "0057-feel-context#010": "同上：`null.b` —— **对 null 取属性**在三值语义里就是 `null`（null 传播），规范没有任何「对 null 取属性是错误」的规定。与 `#009` 同族，TCK 的 `errorResult` 与规范/本组其它用例打架 → 从规范。",
+    "0092-feel-lambda#009": "NFR-F14：`{a: 10, \"\": bkm_009_1(100)(2)}` 期望 **200**（result entry 的值），但同批 `0057#007` 的 `{\"\": \"foo\"}` 期望的却是**上下文本身**。两者并不矛盾 —— 前者在 `.dmn` 里是 **boxed context**，第二个 `<contextEntry>` 没有 `<variable>`，即 DMN 的 **result entry**（决策的值 = 该条目）；后者是 FEEL 上下文字面量，空字符串只是个合法键名。跑分器把 boxed context 摊平成 FEEL 文本时丢了「哪一条是 result entry」这层信息 —— 这是**提取器失真，不是 FEEL 语义问题**。若为此给 FEEL 上下文字面量加上 result entry 语义，`0057#007` 立刻会翻车（+1 −1 = 0）。组内其余 17 条仍照常计分。",
     "0092-feel-lambda#013": "NFR-F14：`bkm_013_1(decisionService_013_1, decisionService_013_1)` 期望 5000 —— 实参是 **decisionService**，它在真实 DMN 宿主里会被绑定成可调用体，而跑分器的 `collectInvocables` 只抽 BKM 与带形参的 decision（decisionService 是 DMN 1.4 的另一层构件）。这与已整组 IGNORED 的 0082 同族：考的是 DMN 层的调用绑定，不是 FEEL 语义。组内其余 17 条仍照常计分。"
   }
 }
