@@ -290,33 +290,39 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
     const m = reqString(a, 1, 'contains', 'match');
     return s.includes(m);
   },
+  /*
+   * ★ 字符串函数的形参一律 `string`，**不做隐式转换**：`string length(22)` / `lower case(12)`
+   * 在 FEEL 里都是 `null`（IBM 官方 B-FEEL↔FEEL 对照表：这两条 FEEL 列写 `null`，
+   * B-FEEL 列才写 `0` / `""`）。
+   *
+   * ⚠️ 这里原本用宽松的 `toStr()`（数字→字符串），于是 `string length(22)` 得 2、
+   * `lower case(12)` 得 `"12"` —— 与同档的 `contains` / `replace`（它们用严格 `reqString`）
+   * 自相矛盾。TCK 有这些函数但**没有传非字符串实参的用例**，故 1995/1995 未覆盖。
+   */
   'starts with': (a) => {
-    const s = toStr(a[0] ?? null);
-    const m = toStr(a[1] ?? null);
-    return s === null || m === null ? null : s.startsWith(m);
+    const s = reqString(a, 0, 'starts with', 'string');
+    const m = reqString(a, 1, 'starts with', 'match');
+    return s.startsWith(m);
   },
   'ends with': (a) => {
-    const s = toStr(a[0] ?? null);
-    const m = toStr(a[1] ?? null);
-    return s === null || m === null ? null : s.endsWith(m);
+    const s = reqString(a, 0, 'ends with', 'string');
+    const m = reqString(a, 1, 'ends with', 'match');
+    return s.endsWith(m);
   },
   /**
    * 长度按**码点**数（不是 UTF-16 单元）：TCK 0083 要求
    * `string length("🐎😀")` = 2、`string length("\uD83D\uDCA9")` = 1。
    */
   'string length': (a) => {
-    const s = toStr(a[0] ?? null);
-    return s === null ? null : [...s].length;
+    return [...reqString(a, 0, 'string length', 'string')].length;
   },
 
   // ----- 大小写 -----
   'upper case': (a) => {
-    const s = toStr(a[0] ?? null);
-    return s === null ? null : s.toUpperCase();
+    return reqString(a, 0, 'upper case', 'string').toUpperCase();
   },
   'lower case': (a) => {
-    const s = toStr(a[0] ?? null);
-    return s === null ? null : s.toLowerCase();
+    return reqString(a, 0, 'lower case', 'string').toLowerCase();
   },
 
   // ----- 截取 -----
@@ -325,9 +331,9 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
    * 直接用 `s.slice` 会把代理对切一半，故先摊成 `[...s]` 再切片。
    */
   substring: (a) => {
-    const s = toStr(a[0] ?? null);
+    const s = reqString(a, 0, 'substring', 'string');
     const start = toNumber(a[1] ?? null);
-    if (s === null || start === null || start === 0) return null;
+    if (start === null || start === 0) return null;
     const len = a.length > 2 ? toNumber(a[2] ?? null) : null;
     const chars = [...s];
     const from = toIndex(start, chars.length);
@@ -335,16 +341,14 @@ export const STRING_BUILTINS: Record<string, NativeFn> = {
     return picked.join('');
   },
   'substring before': (a) => {
-    const s = toStr(a[0] ?? null);
-    const m = toStr(a[1] ?? null);
-    if (s === null || m === null) return null;
+    const s = reqString(a, 0, 'substring before', 'string');
+    const m = reqString(a, 1, 'substring before', 'match');
     const i = s.indexOf(m);
     return i < 0 ? '' : s.slice(0, i);
   },
   'substring after': (a) => {
-    const s = toStr(a[0] ?? null);
-    const m = toStr(a[1] ?? null);
-    if (s === null || m === null) return null;
+    const s = reqString(a, 0, 'substring after', 'string');
+    const m = reqString(a, 1, 'substring after', 'match');
     const i = s.indexOf(m);
     return i < 0 ? '' : s.slice(i + m.length);
   },

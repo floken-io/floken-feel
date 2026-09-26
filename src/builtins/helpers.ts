@@ -161,23 +161,19 @@ export function ceilingScaled(n: number, scale: number): number {
   return roundScaled(n, scale, 'ceiling');
 }
 
-/** 过滤出可转成数字的元素（列表聚合用；这些函数的「变参」形态允许跳过非数字） */
-export function numericList(values: readonly Value[]): number[] {
-  const out: number[] = [];
-  for (const v of values) {
-    const n = toNumber(v);
-    if (n !== null) out.push(n);
-  }
-  return out;
-}
-
 /**
- * **严格版**列表聚合：每个元素都必须是 number，否则抛 `FEEL_EVAL_ARG_TYPE`。
+ * 列表聚合的**统一**严格入口：每个元素都必须是 number，否则抛 `FEEL_EVAL_ARG_TYPE`。
  *
- * 用于 `median` / `product` / `stddev` / `mode` —— 它们的形参是 `list<number>`，
- * 含 `null` 或字符串即**类型错误**（TCK 0061#005 / 0062#005 / 0063#005 / 0094#004~005）。
- * 与上面会静默跳过的 `numericList` 分开，是因为 TCK 对两组的期望正好相反：
- * `sum([1,2,"foo"])` 容忍，而 `product([1,2,"foo"])` 必须报错。
+ * 用于 `sum` / `mean` / `median` / `product` / `stddev` / `mode` —— 它们的形参都是 `list<number>`，
+ * 含 `null` 或字符串即**类型错误**（TCK 0061#005 `median([1,2,"foo",4])` → `null`、errorResult；
+ * 0062#005 / 0063#005 / 0094#004~005 同口径）。
+ *
+ * ⚠️ 这里曾并存一个会**静默跳过**非数值的 `numericList`，专供 `sum` / `mean` 用，
+ * 注释还声称「TCK 对两组的期望正好相反：`sum([1,2,"foo"])` 容忍」。该说法是**无依据的推断** ——
+ * TCK 2053 条里 `sum` / `mean` **命中 0 次**，根本无用例可依。权威口径是它们与 `median` 同组：
+ * `sum([1,null,3]) = null`、`sum([1,"1",3]) = null`、`mean([1,"a",3]) = null`
+ * （IBM 官方 B-FEEL↔FEEL 对照表 + OMG issue DMN18-63；`sum([1,null,3]) = 4` 是 **B-FEEL** 的值）。
+ * 已于 2026-09-26 删除 `numericList`，两组统一走本函数。
  */
 export function strictNumericList(values: readonly Value[], fnName: string): number[] {
   const out: number[] = [];

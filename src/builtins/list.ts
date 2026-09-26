@@ -123,12 +123,23 @@ export const LIST_BUILTINS: Record<string, NativeFn> = {
     }
     return out;
   },
+  /**
+   * ★ `union` 不是 `concatenate`：规范写死 **excludes duplicates**
+   * （DMN 规范 Table 41 / Drools 官方函数参考：`union([1,2],[2,3]) = [1,2,3]`；
+   *   FlexRule `union([1,2],[1,2,3],[1,2,3,4]) = [1,2,3,4]`）。
+   *
+   * ⚠️ 曾与 `concatenate` 逐字相同（保留重复 → `[1,2,2,3]`）＝ 实现 bug。
+   * TCK **没有 union 用例**，故 1995/1995 掩盖了它；是与 feelin 批量对比时暴露的。
+   * 去重口径与 `distinct values` 完全一致（同一个 `deepEquals`，`null = null` 视为相同）。
+   */
   union: (a) => {
     const out: Value[] = [];
     for (const v of a) {
       const l = asList(v);
       if (l === null) return null;
-      out.push(...l);
+      for (const x of l) {
+        if (!out.some((y) => deepEquals(y, x))) out.push(x);
+      }
     }
     return out;
   },

@@ -10,11 +10,10 @@
  * 由 `../temporal` 覆盖同名条目补齐（`withTemporal()` 的合并顺序）。
  */
 
-import type { NativeFn } from '../core/types.js';
-import { compareValues, toNumber } from '../core/values.js';
-import { undefinedResultError } from '../core/errors.js';
+import type { NativeFn, Value } from '../core/types.js';
+import { compareValues } from '../core/values.js';
+import { argTypeError, undefinedResultError } from '../core/errors.js';
 import {
-  numericList,
   optScale,
   reqNumber,
   requireArity,
@@ -96,23 +95,64 @@ export const NUMERIC_BUILTINS: Record<string, NativeFn> = {
   },
 
   // ----- 列表聚合 -----
+  /**
+   * ★ `min` / `max` 的形参是 `list`（**可比**即可，不限数字 —— 规范原文 "minimum **comparable** element"），
+   * 故 `min(["b","a"])` = `"a"`、`min([date…])` 有定义；但两条边界必须守：
+   *
+   * 1. **含 `null` 元素 → 无效**（OMG issue DMN18-63：min/max 与 sum/mean 同口径，
+   *    "an array containing at least one null value is resulting in null"）。
+   *    ⚠️ 曾写 `.filter(v => v !== null)` 静默跳过 —— 又一处 B-FEEL 语义混入。
+   * 2. **两两不可比较 → 结果未定义**（`compareValues` 给 `null`，与 FEEL 三值比较一致，
+   *    例如 `1 < "a"` 是 `null`）。曾写 `?? 0` 把"不可比较"当成"相等"，于是 `min([1,"a",3])` 得 1。
+   *
+   * ⚠️ TCK 无 `min(` / `max(` 的 FEEL 用例（2053 条里 0 命中），故 1995/1995 同样掩盖了这两处。
+   */
   min: (a) => {
-    const items = spread(a).filter((v) => v !== null);
+    const items = spread(a);
     if (items.length === 0) return null;
-    return items.reduce((acc, v) => ((compareValues(v, acc) ?? 0) < 0 ? v : acc));
+    let acc: Value = items[0] ?? null;
+    if (acc === null) throw argTypeError('min', 'list', 'list of comparable values', 'null');
+    for (let i = 1; i < items.length; i++) {
+      const v = items[i] ?? null;
+      if (v === null) throw argTypeError('min', 'list', 'list of comparable values', 'null');
+      const c = compareValues(v, acc);
+      if (c === null) throw undefinedResultError('min', { left: acc, right: v });
+      if (c < 0) acc = v;
+    }
+    return acc;
   },
   max: (a) => {
-    const items = spread(a).filter((v) => v !== null);
+    const items = spread(a);
     if (items.length === 0) return null;
-    return items.reduce((acc, v) => ((compareValues(v, acc) ?? 0) > 0 ? v : acc));
+    let acc: Value = items[0] ?? null;
+    if (acc === null) throw argTypeError('max', 'list', 'list of comparable values', 'null');
+    for (let i = 1; i < items.length; i++) {
+      const v = items[i] ?? null;
+      if (v === null) throw argTypeError('max', 'list', 'list of comparable values', 'null');
+      const c = compareValues(v, acc);
+      if (c === null) throw undefinedResultError('max', { left: acc, right: v });
+      if (c > 0) acc = v;
+    }
+    return acc;
   },
+  /**
+   * ★ `sum` / `mean` 与 `median` / `product` / `stddev` / `mode` **同组**，形参都是 `list<number>`：
+   * 含 `null` 或非数值元素 = **类型错误**（与 `median([1,2,"foo",4])` → `null` 的 TCK 0061#005 同口径）。
+   *
+   * ⚠️ 曾误用会静默跳过非数值的 `numericList`，于是 `sum([1,null,3])` 得 4、`sum([1,"1",3])` 得 5 ——
+   * 那是 **B-FEEL 的「忽略非数值」语义**（DMN 1.6 第二方言），不是 FEEL。
+   * FEEL 的权威口径（IBM 官方 B-FEEL↔FEEL 对照表 + OMG issue DMN18-63）：
+   * `sum([1,null,3]) = null`、`sum([1,"1",3]) = null`、`mean([1,"a",3]) = null`。
+   * ⚠️ TCK **没有任何 `sum` / `mean` 用例**（2053 条里 0 命中），故 1995/1995 掩盖了这个偏差；
+   * 是与 `feelin` 批量对比时暴露的。旧注释写的「TCK 期望 sum 容忍」属**无依据的推断**，已订正。
+   */
   sum: (a) => {
-    const nums = numericList(spread(a));
+    const nums = strictNumericList(spread(a), 'sum');
     if (nums.length === 0) return null;
     return nums.reduce((x, y) => x + y, 0);
   },
   mean: (a) => {
-    const nums = numericList(spread(a));
+    const nums = strictNumericList(spread(a), 'mean');
     if (nums.length === 0) return null;
     return nums.reduce((x, y) => x + y, 0) / nums.length;
   },

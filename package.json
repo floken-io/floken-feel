@@ -1,6 +1,6 @@
 {
   "name": "floken-feel",
-  "version": "0.0.0",
+  "version": "0.0.3",
   "description": "FEEL expression language for JavaScript/TypeScript \u2014 parse, evaluate, diagnose",
   "type": "module",
   "sideEffects": [
@@ -16,7 +16,7 @@
   },
   "types": "./dist/index.d.ts",
   "main": "./dist/index.js",
-  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md", "known-gaps.md"],
   "publishConfig": { "access": "public", "provenance": true },
   "scripts": {
     "build": "tsup",

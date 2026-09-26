@@ -477,7 +477,7 @@ if (fs.existsSync(path.resolve(baselinePath)) && !argv.includes('--write-baselin
     console.log(`  ✗ 判据① 标签退化 ${regressed.length} 项:`);
     regressed.slice(0, 20).forEach((r) => console.log('    ' + r));
   } else {
-    console.log('  ✓ 判据① 无标签退化（对比 baseline.labels.json）');
+    console.log(`  ✓ 判据① 无标签退化（对比 ${path.basename(baselinePath)}）`);
   }
 }
 

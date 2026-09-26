@@ -135,13 +135,20 @@ evaluate('now()', ctx, {
 
 本包用 **DMN TCK 的 B 口径**自证：官方 **79 个 FEEL label**（`TestCases/*/*-feel-*`），共 **2053 条断言**。
 
-其中 **58 条按 NFR-F14 登记 IGNORED**（`tooling/tck/ignored.json`，理由逐条写死）——它们不是"我们做错了"，
+其中 **58 条按 NFR-F14 登记 IGNORED**（机器可读在 `tooling/tck/ignored.json`，
+可读化与补充见 **[`known-gaps.md`](./known-gaps.md)**，理由逐条写死）——它们不是"我们做错了"，
 而是**该断言考的能力不属于 FEEL 表达式层**，或 **TCK 自身矛盾**：`0076-feel-external-java`（18 条，Java 绑定要 JVM）、
 `0082-feel-coercion`（36 条，考的是 DMN 声明类型与值之间的强制转换，归属 `floken-dmn`），
 外加单条 `0057#009/#010`（`{a:1}.b` / `null.b`：description 写 "results in null" 却标 `errorResult`，从规范）、
 `0092#013`（decisionService 调用，与 0082 同族）、`0092#009`（**boxed context 的 result entry**，
 跑分器摊平成 FEEL 文本时丢了这一层 → 提取器失真）。
 IGNORED 不进任何口径的分子分母，单独记 ⊘，故**计入口径是 1995 条**。
+
+> ⚠️ **全绿 ≠ 口径正确**：TCK 2053 条里 `sum` / `mean` / `min(` / `max(` / `union(` / `round(`
+> **命中 0 条**，字符串函数也没有「传非字符串实参」的用例。本包曾把这些实现成 B-FEEL 语义
+> （`sum([1,null,3])` 得 4、`string length(22)` 得 2）却依然 1995/1995。
+> 现由 `test/feel-dialect.test.ts`（IBM 官方 B-FEEL↔FEEL 对照表 26 条）与
+> `test/aggregates.test.ts` 钉死 FEEL 口径 —— 详见 `known-gaps.md` §2。
 
 ### ★ 两套口径，两个入口 —— 不用二选一，且都是 100%
 

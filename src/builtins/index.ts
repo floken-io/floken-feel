@@ -20,7 +20,6 @@ export {
   ceilingScaled,
   EMPTY_CONTEXT,
   floorScaled,
-  numericList,
   optNumber,
   optScale,
   reqNumber,
