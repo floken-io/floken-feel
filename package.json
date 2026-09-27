@@ -19,7 +19,10 @@
   "files": ["dist", "README.md", "LICENSE", "CHANGELOG.md", "known-gaps.md"],
   "publishConfig": { "access": "public", "provenance": true },
   "scripts": {
+    "clean:junk": "node tooling/clean-junk.mjs",
+    "prebuild": "node tooling/clean-junk.mjs",
     "build": "tsup",
+    "postbuild": "node tooling/clean-junk.mjs",
     "test": "vitest run",
     "verify": "node tooling/verify.mjs",
     "tck:extract": "node tooling/tck/extract.mjs",
