@@ -89,6 +89,7 @@ S-FEEL 子路径 / `range()` / `list replace` / duration 取负。
 | **`now()` 的输出不带时区** | 我们给本地墙上时间（如 `2026-09-26T16:17:26.182`），`feelin` 给带时区名（`…@Asia/Shanghai`）。TCK 只测 `now() instance of date and time`，未覆盖字符串形态。FEEL 的 date and time 本就允许不带时区，故非缺陷；若要改成带时区需先确认下游（dmn）依赖 |
 | **DMN 1.6 的 B-FEEL 方言** | 未实现（它要求第二套语义开关：二值逻辑、数值错→0、字符串错→""、日期错→epoch）。见 §2：本包实现的是 **FEEL** |
 | **`is defined(value)`** | 返回 `null`（未实现）。它**不在 OMG 规范的内置函数表**里（是 Camunda / Drools 的扩展），`feelin` 同样没有。故属刻意不做，不计入 106 个规范名 |
+| **★ 运行期诊断的定位粒度 = 整个出错节点** | 例：`substring(age, 2)`（age 是 number）→ `FEEL_EVAL_ARG_TYPE @0..17`，**覆盖整个 `call`**，不指向出错的那个实参。原因：`helpers.reqString/reqNumber` 抛错时只带形参名，位置是上层 catch 用调用节点补的。要看具体原因得读 `message`（含形参与实际类型）。<br>影响：编辑器做"精确波浪线"时，运行期问题只能整节点标红（语法诊断精确到 token，不受影响）。<br>后续改法：`helpers` 的 `reqXxx` 增加可选实参节点入参，抛错时用它定位 —— 需同时改 evaluator 的内置调用点，成本中等，**未做** |
 | **A 口径 3495（全量 DMN TCK）** | 归 `floken-dmn`（需要 DRG 元素图 + 决策表命中策略），本包没有 DMN 引擎，跑不出来 |
 
 ---

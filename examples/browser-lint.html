@@ -94,6 +94,21 @@
   }
   .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
   code { background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+
+  /* AST 树 */
+  .tree { font: 12.5px/1.7 Consolas, monospace; overflow-x: auto; }
+  .tree ul { list-style: none; margin: 0; padding-left: 16px; border-left: 1px dotted var(--border); }
+  .tree > ul { padding-left: 0; border-left: none; }
+  .tree li { margin: 1px 0; }
+  .node { display: inline-block; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel); }
+  .node .ty { color: var(--accent); font-weight: 600; }
+  .node .pos { color: var(--muted); }
+  .node .txt { color: var(--k-string); }
+  .node .kv { color: var(--muted); }
+  .node.err { border-color: var(--k-error); background: var(--err-bg); }
+  .tag { font-size: 11px; padding: 0 5px; border-radius: 3px; background: var(--k-error); color: #fff; margin-left: 5px; }
+  .tag.warn { background: var(--k-boolean); }
+  .empty { color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
@@ -123,10 +138,24 @@
   <pre class="out" id="out">（点上面的按钮）</pre>
 </div>
 
+<div class="card">
+  <h2>解析树（AST）—— 红底节点就是"错在这"的那棵子树</h2>
+  <div class="hint">
+    <code>parseWithDiagnostics(src)</code> 给 AST；诊断区间与节点区间求**包含**（不是相交），
+    **最小的那个包含节点**才是出错点，只有它挂诊断码 —— 所以 `list contains(tags,"vip") + 1`
+    会标在 `binary` 那层，而不是把整条路径染红。
+    ⚠️ 已知粒度限制：**运行期诊断**（橙色 tag）覆盖的是**整个出错节点**（如整个 `call`），
+    不细到具体实参 —— 看具体原因请把鼠标停在 tag 上看 `message`（例如
+    “`substring` 期望 string 却拿到 number”）。语法诊断（红色）精确到 token。
+    语法没走完时建不出树（<code>ast</code> 为 <code>null</code>），此时退化显示词法 token 流。
+  </div>
+  <div class="tree" id="tree" style="margin-top:10px"></div>
+</div>
+
 <script type="module">
   // 相对路径直接 import 产物；浏览器不认识 bare specifier，所以这里用相对路径 ——
   // 真实项目里由打包器/importmap 把 'floken-feel/editor' 解析到这两个文件。
-  import { diagnose, highlight } from '../dist/editor.js';
+  import { diagnose, highlight, parseWithDiagnostics, tokens } from '../dist/editor.js';
   import { evaluate } from '../dist/index.js';
 
   const input = document.getElementById('input');
@@ -178,24 +207,130 @@
       : '<li class="ok">✓ 无诊断</li>';
   }
 
-  input.addEventListener('input', () => render(input.value));
+  // ---------- AST 树（诊断落点标红）----------
+  const treeEl = document.getElementById('tree');
+  let runtimeDiags = []; // 运行期诊断（点"求值"后填充；一改输入就清空）
+
+  const isNode = (v) => v && typeof v === 'object' && typeof v.type === 'string' && typeof v.start === 'number';
+
+  /**
+   * 节点是否**包含**诊断区间 —— 用"包含"而不是"相交"：
+   * 相交会让一条粗粒度诊断把从根到叶的整条路径全染红（看不出重点）；
+   * 取**最小的包含节点**，得到的才是"最贴近出错点的那棵子树"。
+   * 零宽诊断（start === end，如"这里漏了 `)`"）按"落在该节点内"算。
+   */
+  function contains(node, d) {
+    const ns = node.start;
+    const ne = node.end;
+    return d.end > d.start ? ns <= d.start && ne >= d.end : d.start >= ns && d.start <= ne;
+  }
+
+  /** AST 没有统一的 children 字段：凡「对象且带 type + start」的字段值都算子节点 */
+  function childrenOf(node) {
+    const out = [];
+    for (const k of Object.keys(node)) {
+      if (k === 'type' || k === 'start' || k === 'end') continue;
+      const v = node[k];
+      if (Array.isArray(v)) {
+        v.forEach((item, i) => { if (isNode(item)) out.push([k + '[' + i + ']', item]); });
+      } else if (isNode(v)) {
+        out.push([k, v]);
+      }
+    }
+    return out;
+  }
+
+  /** 标量属性摘要（name / value / op …），子节点与数组不在这里重复显示 */
+  function attrText(node) {
+    const parts = [];
+    for (const k of Object.keys(node)) {
+      if (k === 'type' || k === 'start' || k === 'end') continue;
+      const v = node[k];
+      if (isNode(v) || (Array.isArray(v) && v.some(isNode))) continue;
+      parts.push(k + '=' + JSON.stringify(v));
+    }
+    return parts.join(' ');
+  }
+
+  function renderTree(src) {
+    const parsed = parseWithDiagnostics(src);
+    const all = parsed.diagnostics.map((d) => Object.assign({}, d, { kind: 'syntax' }))
+      .concat(runtimeDiags.map((d) => Object.assign({}, d, { kind: 'runtime' })));
+
+    if (!parsed.ast) {
+      // 建不出树：退化显示词法视图（token 流；词法也出错时再退到 highlight 的 span）
+      let tk = [];
+      try { tk = tokens(src); } catch { tk = []; }
+      const fb = tk.length ? tk : highlight(src).map((s) => ({ type: s.kind, value: s.value, from: s.from, to: s.to }));
+      treeEl.innerHTML =
+        '<div class="empty">语法未走完，建不出 AST（' +
+        (parsed.diagnostics[0] ? esc(parsed.diagnostics[0].code) : '—') + '）。下面是词法视图：</div><ul>' +
+        fb.map((t) => '<li><span class="node' + (t.type === 'error' ? ' err' : '') + '">' +
+          '<span class="ty">' + esc(String(t.type)) + '</span> ' +
+          '<span class="txt">' + esc(String(t.value === undefined ? '' : t.value)) + '</span> ' +
+          '<span class="pos">[' + (t.from === undefined ? t.start : t.from) + ',' +
+          (t.to === undefined ? t.end : t.to) + ')</span></span></li>').join('') +
+        '</ul>';
+      return;
+    }
+
+    const walk = (node, label) => {
+      const mine = all.filter((d) => contains(node, d));
+      const kids = childrenOf(node);
+      // 只在**最小的包含节点**上挂诊断码（更深的子节点若也包含，说明该节点还不够具体）
+      const deeper = kids.some((kv) => all.some((d) => contains(kv[1], d)));
+      const txt = src.slice(node.start, node.end);
+      return '<li><span class="node' + (mine.length ? ' err' : '') + '">' +
+        (label ? '<span class="kv">' + esc(label) + ':</span> ' : '') +
+        '<span class="ty">' + esc(node.type) + '</span> ' +
+        '<span class="pos">[' + node.start + ',' + node.end + ')</span> ' +
+        (txt.length && txt.length <= 28 ? '<span class="txt">' + esc(txt) + '</span> ' : '') +
+        (attrText(node) ? '<span class="kv">' + esc(attrText(node)) + '</span> ' : '') +
+        (mine.length && !deeper
+          ? mine.map((d) => '<span class="tag' + (d.kind === 'runtime' ? ' warn' : '') + '" title="' +
+              esc(d.message || '') + '">' + esc(d.code) + '</span>').join('')
+          : '') +
+        '</span>' +
+        (kids.length ? '<ul>' + kids.map((kv) => walk(kv[1], kv[0])).join('') + '</ul>' : '') +
+        '</li>';
+    };
+    // 落在任何节点之外（通常是"表达式末尾少了东西"）的诊断也要让人看见
+    const anyHit = (node, d) => contains(node, d) || childrenOf(node).some((kv) => anyHit(kv[1], d));
+    const outside = all.filter((d) => !anyHit(parsed.ast, d));
+    treeEl.innerHTML =
+      (outside.length
+        ? '<div class="empty">⚠ ' + outside.length + ' 条诊断不落在任何节点上（多在表达式末尾）：' +
+          outside.map((d) => esc(d.code) + ' @' + d.start).join('；') + '</div>'
+        : '') +
+      '<ul>' + walk(parsed.ast, '') + '</ul>';
+  }
+
+  input.addEventListener('input', () => {
+    runtimeDiags = [];
+    render(input.value);
+    renderTree(input.value);
+  });
   input.addEventListener('focus', () => editor.classList.add('focus'));
   input.addEventListener('blur', () => editor.classList.remove('focus'));
   render(input.value);
+  renderTree(input.value);
 
   document.getElementById('run').addEventListener('click', () => {
     const vars = { tags: ['vip', 'new'], name: 'Ada', age: 30 };
     try {
       const r = evaluate(input.value, vars);
       const w = r.warnings || [];
+      runtimeDiags = w;
       out.textContent =
         'value     = ' + JSON.stringify(r.value) + '\n' +
         'warnings  = ' + (w.length
           ? '\n' + w.map((x) => '  · ' + x.code + ' @' + x.start + '..' + x.end + '  ' + x.message).join('\n')
           : '（无）');
     } catch (e) {
+      runtimeDiags = [];
       out.textContent = '抛异常：' + (e && e.code ? e.code + '\n' + e.message : String(e));
     }
+    renderTree(input.value); // ★ 运行期诊断也标到树上（橙色 tag）
   });
 </script>
 </body>
