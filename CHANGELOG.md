@@ -3,9 +3,21 @@
 本包遵循 [Semantic Versioning](https://semver.org/)，格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 0.x 阶段跨包依赖写 `>=x.y.z <1.0.0`（不用 `^`）。
 
+## 0.0.4 — 2026-09-27
+
+### 文档
+
+- README 重写为对外文档：只留安装、四档入口的用法示例、错误与诊断契约、TCK 口径、
+  subpath exports 说明与相关包对照表；移除施工进度、内部决策编号与包外文档引用。
+- 示例全部按当前产物实测过（含 `highlight()` 降级视图与 `diagnostics` 定位）。
+
+### 修正
+
+- README 中 `evaluate` 的返回契约与实现对齐（此前写错了字段名）。
+
 ## 0.0.3 — 2026-09-26
 
-首个发布版本，对应里程碑 **F3**（`05-包需求-floken-feel.md` §里程碑）。
+首个发布版本，对应里程碑 **F3**。
 F0–F2 未单独发版，其内容一并包含在本版中。
 
 ### 完成
