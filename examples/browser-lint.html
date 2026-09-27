@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>floken-feel · 浏览器实时错误提示 demo</title>
+<!--
+  ★ 这个页面只用原生 ES Module，没有打包器、没有 CDN、没有任何构建步骤。
+    直接 import 本地产物 dist/editor.js（纯 ESM，零 Node API、零 DOM 依赖），
+    因此**浏览器可以直接跑**，Node 侧不需要存在。
+-->
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1f2328; --muted: #656d76; --border: #d0d7de;
+    --panel: #f6f8fa; --accent: #0969da;
+    --k-keyword: #cf222e; --k-boolean: #953800; --k-null: #953800;
+    --k-number: #0550ae; --k-string: #0a7d32; --k-temporal: #8250df;
+    --k-function: #6639ba; --k-variable: #1f2328; --k-operator: #cf222e;
+    --k-punctuation: #57606a; --k-comment: #6e7781; --k-error: #82071e;
+    --err-bg: #ffebe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #8b949e; --border: #30363d;
+      --panel: #161b22; --accent: #58a6ff;
+      --k-keyword: #ff7b72; --k-boolean: #ffa657; --k-null: #ffa657;
+      --k-number: #79c0ff; --k-string: #a5d6ff; --k-temporal: #d2a8ff;
+      --k-function: #d2a8ff; --k-variable: #e6edf3; --k-operator: #ff7b72;
+      --k-punctuation: #8b949e; --k-comment: #8b949e; --k-error: #ff7b72;
+      --err-bg: #3d1d1f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .card { border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; }
+
+  /* 编辑器：textarea 叠在高亮层上，文字透明、只留光标 */
+  .editor { position: relative; }
+  .editor > .layer, .editor > textarea {
+    font: 14px/1.7 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
+    white-space: pre-wrap; word-break: break-word; tab-size: 2;
+  }
+  .editor > .layer {
+    min-height: 76px; pointer-events: none; overflow-wrap: break-word;
+  }
+  .editor > textarea {
+    position: absolute; inset: 0; width: 100%; height: 100%; resize: none;
+    background: transparent; color: transparent; caret-color: var(--fg);
+    outline: none; border-color: transparent;
+  }
+  .editor > textarea:focus { border-color: transparent; }
+  .editor.focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 6px; }
+  .k-keyword { color: var(--k-keyword); }
+  .k-boolean, .k-null { color: var(--k-boolean); }
+  .k-number { color: var(--k-number); }
+  .k-string { color: var(--k-string); }
+  .k-temporal { color: var(--k-temporal); }
+  .k-function { color: var(--k-function); }
+  .k-variable { color: var(--k-variable); }
+  .k-operator { color: var(--k-operator); }
+  .k-punctuation { color: var(--k-punctuation); }
+  .k-comment { color: var(--k-comment); font-style: italic; }
+  /* ★ 波浪线：诊断区间 */
+  .err { text-decoration: underline wavy var(--k-error); text-decoration-thickness: 1px; background: var(--err-bg); }
+  /* 零宽诊断（start === end）：在光标位置插一个红色竖标记，表示"这里少了东西" */
+  .caret-mark {
+    display: inline-block; width: 0; border-left: 2px solid var(--k-error);
+    margin-right: -2px; vertical-align: baseline;
+  }
+
+  ul.diags { list-style: none; margin: 0; padding: 0; }
+  ul.diags li {
+    padding: 8px 10px; border-left: 3px solid var(--k-error); background: var(--panel);
+    border-radius: 0 6px 6px 0; margin-bottom: 6px; font-size: 13px;
+  }
+  ul.diags li.ok { border-left-color: #1a7f37; color: var(--muted); }
+  .code { font-family: Consolas, monospace; color: var(--accent); }
+  .pos { color: var(--muted); }
+  button {
+    font: inherit; padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); color: var(--fg); cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: var(--accent); }
+  pre.out {
+    margin: 10px 0 0; padding: 10px 12px; background: var(--panel); border-radius: 6px;
+    font: 13px/1.6 Consolas, monospace; white-space: pre-wrap; overflow-x: auto;
+  }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  code { background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<h1>floken-feel · 网页端 FEEL 实时错误提示</h1>
+<p class="sub">
+  原生 ES Module 直接加载 <code>dist/editor.js</code>（<code>diagnose</code> + <code>highlight</code>），
+  零打包器、零 Node 依赖。边打字边出：语法着色 + 波浪线 + 错误码 + 定位 + "可能漏了什么"。
+</p>
+
+<div class="card">
+  <h2>表达式（试试敲到一半，比如 <code>date("2020-01-0</code> 或 <code>1 + </code>）</h2>
+  <div class="editor" id="editor">
+    <div class="layer" id="layer"></div>
+    <textarea id="input" spellcheck="false" rows="3">if list contains(tags, "vip") then @"2020-01-01" else substring(name, </textarea>
+  </div>
+  <div class="hint">
+    着色走 <code>highlight(src)</code>；波浪线走 <code>diagnose(src)</code>。
+    两者**共用同一套名字合并规则**，所以着色边界 === 解析边界（不会出现"划错位置"）。
+  </div>
+  <ul class="diags" id="diags" style="margin-top:12px"></ul>
+</div>
+
+<div class="card">
+  <h2>求值（主入口 <code>evaluate</code>：运行期诊断 —— 未知变量 / 类型不符，默认给 null + 诊断，不抛）</h2>
+  <button id="run">求值</button>
+  <span class="hint">可用变量：<code>{"tags": ["vip","new"], "name": "Ada", "age": 30}</code></span>
+  <pre class="out" id="out">（点上面的按钮）</pre>
+</div>
+
+<script type="module">
+  // 相对路径直接 import 产物；浏览器不认识 bare specifier，所以这里用相对路径 ——
+  // 真实项目里由打包器/importmap 把 'floken-feel/editor' 解析到这两个文件。
+  import { diagnose, highlight } from '../dist/editor.js';
+  import { evaluate } from '../dist/index.js';
+
+  const input = document.getElementById('input');
+  const layer = document.getElementById('layer');
+  const diagsEl = document.getElementById('diags');
+  const editor = document.getElementById('editor');
+  const out = document.getElementById('out');
+
+  const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+  /** 字符级渲染：先铺着色，再按诊断区间叠加波浪线（两者粒度不同，必须分层） */
+  function render(src) {
+    const spans = highlight(src);
+    const diags = diagnose(src);
+
+    const kinds = new Array(src.length).fill(null);
+    for (const s of spans) {
+      for (let i = s.from; i < s.to && i < src.length; i += 1) kinds[i] = s.kind;
+    }
+    const inErr = new Array(src.length).fill(false);
+    const zeroWidth = []; // start === end 的诊断（"这里少了东西"）
+    for (const d of diags) {
+      if (d.end > d.start) {
+        for (let i = d.start; i < d.end && i < src.length; i += 1) inErr[i] = true;
+      } else {
+        zeroWidth.push(d.start);
+      }
+    }
+
+    let html = '';
+    for (let i = 0; i < src.length; i += 1) {
+      const mark = zeroWidth.includes(i) ? '<span class="caret-mark"></span>' : '';
+      const ch = src[i] === '\n' ? '\n' : esc(src[i]);
+      html += mark + (kinds[i]
+        ? '<span class="k-' + kinds[i] + (inErr[i] ? ' err' : '') + '">' + ch + '</span>'
+        : (inErr[i] ? '<span class="err">' + ch + '</span>' : ch));
+    }
+    // 末尾的零宽诊断（如 "1 + " 缺右操作数）
+    if (zeroWidth.includes(src.length)) html += '<span class="caret-mark"></span>';
+    layer.innerHTML = html || '<span style="color:var(--muted)">（空）</span>';
+
+    diagsEl.innerHTML = diags.length
+      ? diags.map((d) =>
+          '<li><span class="code">' + esc(d.code) + '</span> ' +
+          '<span class="pos">@' + d.start + '..' + d.end + '</span><br>' + esc(d.message) +
+          (d.suggestions && d.suggestions.length ? '<br><span class="pos">提示：' + esc(d.suggestions.join('；')) + '</span>' : '') +
+          (d.expected && d.expected.length ? '<br><span class="pos">期望：' + esc(d.expected.join(' | ')) + '</span>' : '') +
+          '</li>').join('')
+      : '<li class="ok">✓ 无诊断</li>';
+  }
+
+  input.addEventListener('input', () => render(input.value));
+  input.addEventListener('focus', () => editor.classList.add('focus'));
+  input.addEventListener('blur', () => editor.classList.remove('focus'));
+  render(input.value);
+
+  document.getElementById('run').addEventListener('click', () => {
+    const vars = { tags: ['vip', 'new'], name: 'Ada', age: 30 };
+    try {
+      const r = evaluate(input.value, vars);
+      const w = r.warnings || [];
+      out.textContent =
+        'value     = ' + JSON.stringify(r.value) + '\n' +
+        'warnings  = ' + (w.length
+          ? '\n' + w.map((x) => '  · ' + x.code + ' @' + x.start + '..' + x.end + '  ' + x.message).join('\n')
+          : '（无）');
+    } catch (e) {
+      out.textContent = '抛异常：' + (e && e.code ? e.code + '\n' + e.message : String(e));
+    }
+  });
+</script>
+</body>
+</html>

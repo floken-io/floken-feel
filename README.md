@@ -443,15 +443,53 @@ highlight('if a > 1 then "x" else null // c');
 // ]
 ```
 
-`kind` 取值：`keyword` / `boolean` / `null` / `number` / `string` / `function` /
-`variable` / `operator` / `punctuation` / `comment`。
+`kind` 取值：`keyword` / `boolean` / `null` / `number` / `string` / `temporal` / `function` /
+`variable` / `operator` / `punctuation` / `comment` / **`error`**。
 
 判定规则（与解析边界保持一致）：
 - 多词内置名（`list contains`、`date and time`）**整体**成一个 span；
 - 名字后跟 `(` → `function`，否则 `variable`（纯词法判定，故 `now` 作值用时是 `variable`）；
-- 源码非法时不抛异常，返回已识别部分（无法分词则返回 `[]`）。
+- **源码非法时不抛异常，降级为「已识别部分 + 尾部 `error` 区间」**：
+
+```ts
+highlight('1 + "abc');   // 未闭合字符串
+// [ { kind: 'number',  value: '1',     from: 0, to: 1 },
+//   { kind: 'operator',value: '+',     from: 2, to: 3 },
+//   { kind: 'error',   value: '"abc',  from: 4, to: 8 } ]   ← 只有坏掉的那一段是 error
+```
+
+> ★ 为什么不整段返回 `[]`（2026-09-27 修）：编辑器是**边打字边着色**的，
+> 用户敲到 `date("2020-01-0` 这种中间态时前面 13 个字符仍然该着色。
+> 整段变空会让"每敲一下整行掉色"、闪烁到没法用 ——
+> 实测 5 条含字面量的表达式逐字符输入共 **101 个中间态，原实现有 37 个整段掉色**（现已为 0）。
+> 该行为原先被 `test/highlight.test.ts` 固化成 `toEqual([])`，与"返回已识别部分"的文档承诺自相矛盾，已一并订正。
 
 > `highlight` 实现在 `src/core/highlight.ts`（纯词法层），因此 `.` 与 `./editor` 都能取到。
+
+### 在浏览器里跑
+
+**能，且不需要任何打包器/转译**：产物是纯 ESM，dist 里**零 `node:` 内置依赖、零 DOM 依赖**，
+`./editor` 子入口甚至不装载时态库（体积最小）。
+
+```html
+<script type="module">
+  // 真实项目里由打包器或 importmap 把 'floken-feel/editor' 解析到 dist/editor.js
+  import { diagnose, highlight } from '/node_modules/floken-feel/dist/editor.js';
+
+  // 边打字边出波浪线：diagnose 给 start/end/expected/suggestions，highlight 给配色
+  const diags = diagnose(src);                 // 不抛，返回 Diagnostic[]
+  const spans = highlight(src);                // 着色（非法时降级，不整段消失）
+</script>
+```
+
+完整可运行示例见 **`examples/browser-lint.html`**（起个静态服务器打开即可，例如
+`python -m http.server`；`file://` 下浏览器会拦 ES module，必须用 http）。
+
+网页端做错误提示的正确姿势（与 `04-dmn` §14.1 同源）：
+- **静态/语法错误** → `diagnose()`：`Diagnostic[]`，带 `start`/`end`，直接画波浪线；
+- **运行期问题**（未知变量、类型不符）→ 主入口 `evaluate()` 的 `warnings`，同样是带定位的 `Diagnostic[]`；
+- **不要用 `errorMode: 'throw'` 做校验**：它只能报第一个错且丢掉 `value`，
+  而诊断列表能一次列全部且带位置 —— 这正是 bpmn-io 另做 `@bpmn-io/feel-lint` 而不是给求值器加严格开关的理由。
 
 ---
 

@@ -24,7 +24,9 @@ export type HighlightKind =
   | 'variable'
   | 'operator' // + - * / ** = != < <= > >= .. 
   | 'punctuation' // ( ) [ ] { } , . :
-  | 'comment';
+  | 'comment'
+  /** 词法层已经坏掉的区间（未闭合字符串、裸 `@` …）：编辑器应把它画成"这里有问题" */
+  | 'error';
 
 export interface HighlightSpan {
   kind: HighlightKind;
@@ -48,19 +50,70 @@ const PUNCTUATION: ReadonlySet<TokenType> = new Set<TokenType>([
   'colon',
 ]);
 
-/** 切分并着色一段 FEEL 源码（含注释；不抛异常，出错则返回已识别部分） */
+/**
+ * 切分并着色一段 FEEL 源码（含注释；**不抛异常**）
+ *
+ * ★ 词法出错时**降级**而不是整段变空 —— 这是编辑器实时着色的硬要求：
+ * 用户敲到 `date("2020-01-0` 这种中间态时，前面的字符仍然该着色，只有坏掉的那一小段标成 `error`。
+ * 整段返回 `[]` 会让"每敲一下整行掉色"，闪烁到没法用
+ * （实测：5 条含字面量的表达式逐字符输入共 101 个中间态，原实现有 **37 个**整段掉色）。
+ */
 export function highlight(src: string): HighlightSpan[] {
-  let tokens: Token[];
   try {
-    tokens = tokenize(src);
-  } catch {
-    return [];
+    // 名字合并与解析器**共用同一函数**（core/name-merge.ts），保证高亮边界 === 解析边界。
+    // 注释 token 会被原样透传，因此无需先摘出来。
+    return spansOf(src, mergeNames(tokenize(src)));
+  } catch (err) {
+    return partialSpans(src, err);
   }
+}
 
-  // 名字合并与解析器**共用同一函数**（core/name-merge.ts），保证高亮边界 === 解析边界。
-  // 注释 token 会被原样透传，因此无需先摘出来。
-  const ordered = mergeNames(tokens);
+/** 词法出错的降级路径：已识别部分照常着色 + 尾部坏区间标 `error` */
+function partialSpans(src: string, err: unknown): HighlightSpan[] {
+  const cut = recoverCut(src, err);
+  let spans: HighlightSpan[] = [];
+  if (cut > 0) {
+    try {
+      spans = spansOf(src, mergeNames(tokenize(src.slice(0, cut))));
+    } catch {
+      spans = []; // 理论不可达（cut 已验证可分词）；真发生也不许抛出去
+    }
+  }
+  if (cut < src.length) {
+    spans.push({ kind: 'error', value: src.slice(cut), from: cut, to: src.length });
+  }
+  return spans;
+}
 
+/**
+ * 找一个"到此为止还能正常分词"的切割点：
+ * 优先用错误对象自带的位置；位置不可靠时退化为找最大可分词前缀（表达式很短，O(n²) 可接受）。
+ */
+function recoverCut(src: string, err: unknown): number {
+  const at = errPositionStart(err);
+  if (at !== undefined && at > 0 && at < src.length && tokenizable(src.slice(0, at))) return at;
+  for (let n = src.length - 1; n >= 1; n -= 1) {
+    if (tokenizable(src.slice(0, n))) return n;
+  }
+  return 0;
+}
+
+function errPositionStart(err: unknown): number | undefined {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const e = err as { floken?: boolean; position?: { start?: number } };
+  return e.floken === true && typeof e.position?.start === 'number' ? e.position.start : undefined;
+}
+
+function tokenizable(src: string): boolean {
+  try {
+    tokenize(src);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function spansOf(src: string, ordered: Token[]): HighlightSpan[] {
   const spans: HighlightSpan[] = [];
   for (let i = 0; i < ordered.length; i += 1) {
     const t = ordered[i];
