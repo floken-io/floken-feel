@@ -6,7 +6,7 @@ function kindMap(src: string): Record<string, string> {
   return Object.fromEntries(highlight(src).map((s) => [s.value, s.kind]));
 }
 
-describe('@floken/feel · 语法着色（供设计器使用）', () => {
+describe('@floken-io/feel · 语法着色（供设计器使用）', () => {
   it('关键字 / 布尔 / null / 数字 / 字符串 / 运算符 / 变量', () => {
     const k = kindMap('if a > 1 then "x" else null');
     expect(k['if']).toBe('keyword');

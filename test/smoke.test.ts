@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import * as feel from '../src/entries/index.js';
 
-describe('@floken/feel · 包导出健全性', () => {
+describe('@floken-io/feel · 包导出健全性', () => {
   it('导出 feelin 同款的两个主函数', () => {
     expect(typeof feel.evaluate).toBe('function');
     expect(typeof feel.unaryTest).toBe('function');

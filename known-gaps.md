@@ -19,7 +19,7 @@
 | label | 条数 | 理由 |
 |---|---|---|
 | `0076-feel-external-java` | 18 | 全部是 `external {java: {class, method signature}}` 的 **Java 绑定**，需要 JVM 与宿主类路径。本包是纯 FEEL 引擎（零宿主依赖），没有这一层；Java 绑定属宿主适配器职责 |
-| `0082-feel-coercion` | 36 | 考的**不是 FEEL 语义，而是 DMN 类型声明层的强制转换** —— decision / BKM 的 `typeRef`（含函数型 `lambda_number_returns_number`）与「结果值 / 实参值」之间的校验与强转（`[10]`→`10`、`["foo"]`→`"foo"`、`1+1`→string 失败）以及 decisionService 调用。FEEL 表达式引擎没有「decision 的声明类型」这一层（feel 零 floken 依赖、只读表达式），该职责在 `@floken/dmn` |
+| `0082-feel-coercion` | 36 | 考的**不是 FEEL 语义，而是 DMN 类型声明层的强制转换** —— decision / BKM 的 `typeRef`（含函数型 `lambda_number_returns_number`）与「结果值 / 实参值」之间的校验与强转（`[10]`→`10`、`["foo"]`→`"foo"`、`1+1`→string 失败）以及 decisionService 调用。FEEL 表达式引擎没有「decision 的声明类型」这一层（feel 零 floken 依赖、只读表达式），该职责在 `@floken-io/dmn` |
 
 ### 1.2 单条 IGNORED（4 条）
 
@@ -90,7 +90,7 @@ S-FEEL 子路径 / `range()` / `list replace` / duration 取负。
 | **DMN 1.6 的 B-FEEL 方言** | 未实现（它要求第二套语义开关：二值逻辑、数值错→0、字符串错→""、日期错→epoch）。见 §2：本包实现的是 **FEEL** |
 | **`is defined(value)`** | 返回 `null`（未实现）。它**不在 OMG 规范的内置函数表**里（是 Camunda / Drools 的扩展），`feelin` 同样没有。故属刻意不做，不计入 106 个规范名 |
 | **★ 运行期诊断的定位粒度 = 整个出错节点** | 例：`substring(age, 2)`（age 是 number）→ `FEEL_EVAL_ARG_TYPE @0..17`，**覆盖整个 `call`**，不指向出错的那个实参。原因：`helpers.reqString/reqNumber` 抛错时只带形参名，位置是上层 catch 用调用节点补的。要看具体原因得读 `message`（含形参与实际类型）。<br>影响：编辑器做"精确波浪线"时，运行期问题只能整节点标红（语法诊断精确到 token，不受影响）。<br>后续改法：`helpers` 的 `reqXxx` 增加可选实参节点入参，抛错时用它定位 —— 需同时改 evaluator 的内置调用点，成本中等，**未做** |
-| **A 口径 3495（全量 DMN TCK）** | 归 `@floken/dmn`（需要 DRG 元素图 + 决策表命中策略），本包没有 DMN 引擎，跑不出来 |
+| **A 口径 3495（全量 DMN TCK）** | 归 `@floken-io/dmn`（需要 DRG 元素图 + 决策表命中策略），本包没有 DMN 引擎，跑不出来 |
 
 ---
 

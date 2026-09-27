@@ -1,5 +1,5 @@
 /**
- * @floken/feel · TCK 工具（工-A）· 极小 XML 扫描器
+ * @floken-io/feel · TCK 工具（工-A）· 极小 XML 扫描器
  *
  * 为什么自研：本包**零运行时依赖**，工具链也不引入 `saxen`/`fast-xml-parser`
  * （上游 `feelin/tasks/extract-tck-tests.js` 用了 `saxen`，我们只读其思路、不拷实现 —— Q9）。

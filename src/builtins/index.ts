@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 内置函数库 barrel
+ * @floken-io/feel · 内置函数库 barrel
  *
  * 一般只从 `registry.js` 取汇总表；各域单独导出是为便于单测与按域扩展。
  */

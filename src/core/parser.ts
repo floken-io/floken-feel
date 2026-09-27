@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 语法分析器（递归下降，零依赖）
+ * @floken-io/feel · 语法分析器（递归下降，零依赖）
  *
  * 支持：字面量 / 算术 / 比较 / 与或非 / 列表 / 区间 / 上下文 / 函数调用 /
  *      路径访问 / if-then-else / for-in-return / every|some-in-satisfies /

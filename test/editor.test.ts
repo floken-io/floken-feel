@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { diagnose, diagnoseUnaryTests, tokens, parse } from '../src/entries/editor.js';
 
-describe('@floken/feel/editor · 诊断', () => {
+describe('@floken-io/feel/editor · 诊断', () => {
   it('正确表达式 → 无诊断', () => {
     expect(diagnose('1 + 2')).toEqual([]);
     expect(diagnose('if a > 1 then "x" else "y"')).toEqual([]);

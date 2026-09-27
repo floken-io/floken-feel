@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 词法分析器（完全自研，零依赖 —— 不引入 lezer-feel，见 Q9）
+ * @floken-io/feel · 词法分析器（完全自研，零依赖 —— 不引入 lezer-feel，见 Q9）
  */
 
 export type TokenType =

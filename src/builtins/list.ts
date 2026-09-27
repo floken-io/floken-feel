@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 列表内置函数
+ * @floken-io/feel · 列表内置函数
  *
  * 位置参数（`sublist` / `insert before` / `remove`）同为 FEEL 1-based。
  */

@@ -1,4 +1,4 @@
-# @floken/feel
+# @floken-io/feel
 
 FEEL（Friendly Enough Expression Language）表达式语言的独立实现：
 给一串字符串 + 一组变量，返回一个值（外加一组诊断 warnings）。
@@ -16,7 +16,7 @@ FEEL（Friendly Enough Expression Language）表达式语言的独立实现：
 形态**对标 feelin**（`{ value, warnings }`），实现完全自研（Q9：feelin 源码只读不拷）。
 
 ```ts
-import { evaluate, unaryTest } from '@floken/feel';
+import { evaluate, unaryTest } from '@floken-io/feel';
 
 evaluate('1 + 2');                       // { value: 3, warnings: [] }
 evaluate('a * b', { a: 3, b: 4 });       // { value: 12, warnings: [] }
@@ -59,7 +59,7 @@ import {
   FeelError, FeelSyntaxError, FeelOptionError,
   FeelNotLoadedError, FeelLimitError, FeelNotAllowedError,
   FEEL_ERROR_CODES, FEEL_DIAGNOSTIC_CODES,
-} from '@floken/feel';
+} from '@floken-io/feel';
 
 try {
   evaluate('date("2020-01-01")');          // 核心未加载时间档
@@ -68,8 +68,8 @@ try {
     e.code;    // 'FEEL_NOT_LOADED_TEMPORAL'
     e.pkg;     // 'feel'
     e.hint;    // 修复提示
-    e.details; // { function: 'date', module: '@floken/feel/temporal' }
-    // message: 'temporal functions require: await import("@floken/feel/temporal")'
+    e.details; // { function: 'date', module: '@floken-io/feel/temporal' }
+    // message: 'temporal functions require: await import("@floken-io/feel/temporal")'
   }
 }
 ```
@@ -109,7 +109,7 @@ evaluate('now()', ctx, {
 | `clock` | `now()` / `today()` 的时间来源（`05-feel` §6.1：不注入则时态测试无法稳定） | — |
 | `allowedFunctions` | S-FEEL 子集白名单（`03-engine` §7.2：**越界必须报错，不能静默求值**） | 抛 `FEEL_NOT_ALLOWED_FUNCTION` |
 | `maxNodes` / `maxDepth` / `timeoutMs` | 防构造型输入与失控求值 | 抛 `FEEL_LIMIT_MAX_NODES` / `_MAX_DEPTH` / `_TIMEOUT` |
-| 算术操作数 | **只收真数字**：`10 + "10"` / `10 * "10"` … 是类型错误（规范算符表无"字符串→数字"一档，TCK 0100 的 14 条 `error_when_*` 钉死）。`+` 唯一合法的串用法是 `string + string` → 拼接；隐式转换属 **DMN typeRef 强制**（`@floken/dmn` 的 `coerceTypeRef`） | 降级 `null` + 诊断 |
+| 算术操作数 | **只收真数字**：`10 + "10"` / `10 * "10"` … 是类型错误（规范算符表无"字符串→数字"一档，TCK 0100 的 14 条 `error_when_*` 钉死）。`+` 唯一合法的串用法是 `string + string` → 拼接；隐式转换属 **DMN typeRef 强制**（`@floken-io/dmn` 的 `coerceTypeRef`） | 降级 `null` + 诊断 |
 | `builtins` | 覆盖/扩展内置函数表（`./temporal` 正是这样注入的） | — |
 | 未知选项 | — | 抛 `FEEL_OPTION_UNKNOWN`（**禁止静默忽略**） |
 
@@ -118,7 +118,7 @@ evaluate('now()', ctx, {
 
 ### 与 feelin 的差异（有意为之）
 
-| 项 | feelin | @floken/feel |
+| 项 | feelin | @floken-io/feel |
 |---|---|---|
 | 语法错误 | 容错恢复 | 抛 `FeelSyntaxError`（另有 `diagnose()` / `parseWithDiagnostics()` 走不抛路径） |
 | 结果壳 | `{ value, warnings }` | **同样**（保留兼容） |
@@ -138,7 +138,7 @@ evaluate('now()', ctx, {
 其中 **58 条按 NFR-F14 登记 IGNORED**（机器可读在 `tooling/tck/ignored.json`，
 可读化与补充见 **[`known-gaps.md`](./known-gaps.md)**，理由逐条写死）——它们不是"我们做错了"，
 而是**该断言考的能力不属于 FEEL 表达式层**，或 **TCK 自身矛盾**：`0076-feel-external-java`（18 条，Java 绑定要 JVM）、
-`0082-feel-coercion`（36 条，考的是 DMN 声明类型与值之间的强制转换，归属 `@floken/dmn`），
+`0082-feel-coercion`（36 条，考的是 DMN 声明类型与值之间的强制转换，归属 `@floken-io/dmn`），
 外加单条 `0057#009/#010`（`{a:1}.b` / `null.b`：description 写 "results in null" 却标 `errorResult`，从规范）、
 `0092#013`（decisionService 调用，与 0082 同族）、`0092#009`（**boxed context 的 result entry**，
 跑分器摊平成 FEEL 文本时丢了这一层 → 提取器失真）。
@@ -185,10 +185,10 @@ S-FEEL 白名单越界 / 语法错 / 资源上限。
 
 > ⚠️ **「2053」与「1995」的关系**：2053 = 79 个 FEEL label 的**全部断言**（一条没少）；
 > 1995 = 2053 − 58 IGNORED，是**计分基数**。IGNORED 既不进分子也不进分母，故分数是 100%。
-> 另：**3495 / 3391 是 A 口径**（完整 DMN TCK，含决策表与 DRG 遍历），归 `@floken/dmn`，**不是本包的账**。
+> 另：**3495 / 3391 是 A 口径**（完整 DMN TCK，含决策表与 DRG 遍历），归 `@floken-io/dmn`，**不是本包的账**。
 
 > ⚠️ **别拿 `3391 / 3495` 来问本包** —— 那是 **A 口径**（完整 DMN TCK，含 DRG 遍历 / 决策表 / 命中策略），
-> 归属于 `@floken/dmn`；本包没有 DMN 引擎，跑不出来。本包能自证的官方上限就是上面这 2053。
+> 归属于 `@floken-io/dmn`；本包没有 DMN 引擎，跑不出来。本包能自证的官方上限就是上面这 2053。
 
 跑分工具在 `tooling/tck/`（自研 XML 扫描器 + 提取器 + 跑分器，零依赖）；
 **裁判规则（怎么算相等）写死在 `tooling/tck/README.md`** —— 官方规范了输入输出却没有规范判定，这一层必须自己公开写死。
@@ -205,7 +205,7 @@ S-FEEL 白名单越界 / 语法错 / 资源上限。
 比较结果是 `null` **且没有诊断**（跨类型排序比较的规范行为）—— 这是最容易踩的静默坑。
 
 ```ts
-import { toFeel, evaluateTemporal } from '@floken/feel/temporal';
+import { toFeel, evaluateTemporal } from '@floken-io/feel/temporal';
 
 const x = toFeel(new Date('2020-06-01T00:00:00Z')); // → date and time，按 UTC 记
 evaluateTemporal('x > date and time("2020-01-01T00:00:00Z")', { x }); // → { value: true, … }
@@ -243,9 +243,9 @@ evaluateTemporal('x > date and time("2020-01-01T00:00:00Z")', { x }); // → { v
 | `./editor` | designer | 解析 + AST + 诊断 + **语法着色**（**不含求值器/内置函数库**） |
 
 ```ts
-import { unaryTest } from '@floken/feel/unary-tests';
-import { ensureTemporal, evaluateTemporal } from '@floken/feel/temporal';
-import { diagnose, tokens } from '@floken/feel/editor';
+import { unaryTest } from '@floken-io/feel/unary-tests';
+import { ensureTemporal, evaluateTemporal } from '@floken-io/feel/temporal';
+import { diagnose, tokens } from '@floken-io/feel/editor';
 ```
 
 ---
@@ -321,7 +321,7 @@ evaluate('listContains([1,2], 2)').value;  // true
 **扩展点**：
 
 ```ts
-import { registerBuiltin } from '@floken/feel';
+import { registerBuiltin } from '@floken-io/feel';
 registerBuiltin('double', (args) => {
   const n = (args[0] ?? null) as number | null;
   return n === null ? null : n * 2;
@@ -356,14 +356,14 @@ evaluate('true or null').value;  // true
 **本档自带 `temporal-polyfill`（`>=1.0.5 <2.0.0`），无需手动安装，与 Node 版本无关。**
 
 > 依赖形态（⚠️ **ADR Q33，2026-09-25 修订**）：`temporal-polyfill` 是本包的**普通 `dependencies`（自带）**，
-> 不再是 `peerDependencies` + `optional: true` —— **装上 `@floken/feel` 就有时间函数**，
+> 不再是 `peerDependencies` + `optional: true` —— **装上 `@floken-io/feel` 就有时间函数**，
 > 不用再单独 `npm install temporal-polyfill`。
 >
 > 为什么改：Q32 已把它定为 `./temporal` 档的**必需**依赖，而 `optional: true` 意味着"不装也能用"，
 > 二者自相矛盾 —— 宿主漏装时只在**运行期**才炸（且报错点离病灶很远）。
 >
-> 代价（诚实）：`@floken/engine` 这类默认依赖本包的包，`node_modules` 里会多出这一份 polyfill（~1114 KB）；
-> 但只要不 `import '@floken/feel/temporal'` 就**永远不会加载**它，**运行开销为零**。
+> 代价（诚实）：`@floken-io/engine` 这类默认依赖本包的包，`node_modules` 里会多出这一份 polyfill（~1114 KB）；
+> 但只要不 `import '@floken-io/feel/temporal'` 就**永远不会加载**它，**运行开销为零**。
 
 | 口径 | 说明 |
 |---|---|
@@ -383,8 +383,8 @@ evaluate('true or null').value;  // true
 ```ts
 // ★ import 即注册：本档是该包**唯一的副作用档**，import 时自动完成
 //   「动态加载 temporal-polyfill/implementation + 注册时间函数」。
-import '@floken/feel/temporal';
-import { evaluate } from '@floken/feel';
+import '@floken-io/feel/temporal';
+import { evaluate } from '@floken-io/feel';
 
 evaluate('date("2020-01-01")').value;                  // { kind: 'date', iso: '2020-01-01', … }
 evaluate('year(date("2020-01-01"))').value;            // 2020
@@ -405,11 +405,11 @@ evaluate('@"2020-01-01" = date("2020-01-01")').value;  // true（@ 字面量同�
 
 ## 7. 编辑器档（`./editor`）
 
-面向 `@floken/designer` 的表达式编辑器：解析 + 诊断 + 语法着色，**不含求值器与内置函数库**
+面向 `@floken-io/designer` 的表达式编辑器：解析 + 诊断 + 语法着色，**不含求值器与内置函数库**
 （因此这一档很轻，可随设计器一起进浏览器）。
 
 ```ts
-import { diagnose, diagnoseUnaryTests, tokens, parse, parseWithDiagnostics, highlight } from '@floken/feel/editor';
+import { diagnose, diagnoseUnaryTests, tokens, parse, parseWithDiagnostics, highlight } from '@floken-io/feel/editor';
 
 diagnose('1 +');
 // [{ severity: 'error', code: 'FEEL_SYNTAX_UNEXPECTED_TOKEN',
@@ -473,8 +473,8 @@ highlight('1 + "abc');   // 未闭合字符串
 
 ```html
 <script type="module">
-  // 真实项目里由打包器或 importmap 把 '@floken/feel/editor' 解析到 dist/editor.js
-  import { diagnose, highlight } from '/node_modules/@floken/feel/dist/editor.js';
+  // 真实项目里由打包器或 importmap 把 '@floken-io/feel/editor' 解析到 dist/editor.js
+  import { diagnose, highlight } from '/node_modules/@floken-io/feel/dist/editor.js';
 
   // 边打字边出波浪线：diagnose 给 start/end/expected/suggestions，highlight 给配色
   const diags = diagnose(src);                 // 不抛，返回 Diagnostic[]
@@ -503,7 +503,7 @@ highlight('1 + "abc');   // 未闭合字符串
 - `instance of` 的类型名里**不含** `day-time duration`（它含 `-`，会与减法词法冲突；
   需要时用 `duration` 判定）。
 - ~~未覆盖 DMN TCK 全量~~ → **已达成（F3）**：79 个 FEEL label 零退化 + B 口径 1995/1995（100%）。
-  ⚠️ 剩的是**另一本账**：A 口径（完整 DMN TCK，含 DRG 遍历 / 决策表 / 命中策略）归 `@floken/dmn`，本包无 DMN 引擎、跑不出来。
+  ⚠️ 剩的是**另一本账**：A 口径（完整 DMN TCK，含 DRG 遍历 / 决策表 / 命中策略）归 `@floken-io/dmn`，本包无 DMN 引擎、跑不出来。
 - 时态比较：`date` / `time` / `dateTime` 互不可比较，`duration` 不可比较（对齐 feelin 行为）。
 - 名字字符集有意偏离 FEEL：只纳入 `'` 与 `^`，`- + * / .` 保留运算/路径语义（见 §3）。
 

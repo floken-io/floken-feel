@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 值语义公共工具
+ * @floken-io/feel · 值语义公共工具
  *
  * 三值逻辑（NFR-F14 对齐）：null 参与的比较/布尔运算结果为 null（未知），而非 false。
  */

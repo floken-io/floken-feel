@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { evaluate, unaryTest, parseExpression, isContext } from '../src/entries/index.js';
 
-describe('@floken/feel · evaluate 基础', () => {
+describe('@floken-io/feel · evaluate 基础', () => {
   it('算术与优先级', () => {
     expect(evaluate('1 + 2').value).toBe(3);
     expect(evaluate('1 + 2 * 3').value).toBe(7);
@@ -50,7 +50,7 @@ describe('@floken/feel · evaluate 基础', () => {
   });
 });
 
-describe('@floken/feel · 控制结构', () => {
+describe('@floken-io/feel · 控制结构', () => {
   it('if-then-else', () => {
     expect(evaluate('if 1 > 2 then "a" else "b"').value).toBe('b');
     expect(evaluate('if true then 1 else 2').value).toBe(1);
@@ -84,7 +84,7 @@ describe('@floken/feel · 控制结构', () => {
   });
 });
 
-describe('@floken/feel · 三值逻辑（NFR-F14）', () => {
+describe('@floken-io/feel · 三值逻辑（NFR-F14）', () => {
   it('null 参与比较得到 null（未知），不是 false', () => {
     expect(evaluate('null < 1').value).toBe(null);
     expect(evaluate('null = 1').value).toBe(false);
@@ -108,7 +108,7 @@ describe('@floken/feel · 三值逻辑（NFR-F14）', () => {
   });
 });
 
-describe('@floken/feel · 内置函数', () => {
+describe('@floken-io/feel · 内置函数', () => {
   it('数值', () => {
     expect(evaluate('abs(-3)').value).toBe(3);
     expect(evaluate('floor(1.7)').value).toBe(1);
@@ -171,7 +171,7 @@ describe('@floken/feel · 内置函数', () => {
   });
 });
 
-describe('@floken/feel · unaryTest（对标 feelin）', () => {
+describe('@floken-io/feel · unaryTest（对标 feelin）', () => {
   it('feelin 官方示例', () => {
     expect(unaryTest('1', { '?': 1 }).value).toBe(true);
     expect(unaryTest('1', { '?': 2 }).value).toBe(false);
@@ -215,7 +215,7 @@ describe('@floken/feel · unaryTest（对标 feelin）', () => {
   });
 });
 
-describe('@floken/feel · 解析', () => {
+describe('@floken-io/feel · 解析', () => {
   it('parseExpression 产出 AST', () => {
     const ast = parseExpression('1 + 2');
     expect(ast.type).toBe('binary');

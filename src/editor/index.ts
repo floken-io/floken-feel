@@ -1,7 +1,7 @@
 /**
- * @floken/feel · editor 子入口
+ * @floken-io/feel · editor 子入口
  *
- * 面向 `@floken/designer` 的表达式编辑器：解析 + 诊断 + 高亮，**不含求值器**。
+ * 面向 `@floken-io/designer` 的表达式编辑器：解析 + 诊断 + 高亮，**不含求值器**。
  * 语法错误以 `Diagnostic[]` 返回（**不抛异常**），便于编辑器实时波浪线提示 ——
  * 这正是 `05-feel` §6 要的形态：「第 12 到 15 个字符这里，可能漏了一个 `)`」，
  * 而不是一个光秃秃的 `SyntaxError`。

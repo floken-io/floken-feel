@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 求值器
+ * @floken-io/feel · 求值器
  *
  * 三值逻辑：null 参与的比较/布尔运算得到 null（未知），不静默降级为 false。
  *
@@ -362,7 +362,7 @@ const PARAM_ERROR_CODES = new Set<string>([
  *   只有 `+` 有字符串的那一档，且是 `string + string` → 拼接（见 `binary` 分支）。
  *
  * ⚠️ 曾在此处按 `strictCoercion` 选项宽容转换（`"1" + 1` = 2），与 TCK 直接冲突，已废。
- *   隐式转换是 **DMN 的 typeRef 强制**（`@floken/dmn` 的 `coerceTypeRef`）与
+ *   隐式转换是 **DMN 的 typeRef 强制**（`@floken-io/dmn` 的 `coerceTypeRef`）与
  *   **内置函数实参**的事，不是算符的事 —— 两者不可混为一谈。
  */
 function num(v: Value): number | null {

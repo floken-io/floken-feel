@@ -1,5 +1,5 @@
 /**
- * @floken/feel · TCK 工具（工-A 下半）· B 口径跑分器
+ * @floken-io/feel · TCK 工具（工-A 下半）· B 口径跑分器
  *
  * 输入：`extract.mjs` 产出的 `tmp/tck/cases.json`（79 组 / 2053 断言）。
  * 输出：总分 + 每 label 分数 + 失败清单（落地 `tmp/tck/results.json` / `failed.json`）。

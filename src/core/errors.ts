@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 错误与诊断契约（feel 侧实现）
+ * @floken-io/feel · 错误与诊断契约（feel 侧实现）
  *
  * 五包通用的错误处理契约见仓库根 `AGENTS.md` §5「错误处理契约」。本档落实 feel 这一侧：
  *
@@ -229,10 +229,10 @@ export function expectedTokenError(
  * message 用 `05-feel` §4 逐字规定的修复串（AC-F7：必须是带修复提示的明确错误，不是 `undefined`）。
  */
 export function temporalNotLoaded(fnName: string): FeelNotLoadedError {
-  return new FeelNotLoadedError('temporal functions require: await import("@floken/feel/temporal")', {
+  return new FeelNotLoadedError('temporal functions require: await import("@floken-io/feel/temporal")', {
     code: FEEL_ERROR_CODES.NOT_LOADED_TEMPORAL,
-    hint: 'await import("@floken/feel/temporal") 后重试，或改用 evaluateTemporal()',
-    details: { function: fnName, module: '@floken/feel/temporal' },
+    hint: 'await import("@floken-io/feel/temporal") 后重试，或改用 evaluateTemporal()',
+    details: { function: fnName, module: '@floken-io/feel/temporal' },
   });
 }
 

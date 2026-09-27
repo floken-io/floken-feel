@@ -24,7 +24,7 @@ function catchError(fn: () => unknown): FeelError {
   throw new Error('expected the call to throw, but it did not');
 }
 
-describe('@floken/feel · F2 带空格 / 撇号的名字', () => {
+describe('@floken-io/feel · F2 带空格 / 撇号的名字', () => {
   it('撇号名字（Mike\'s daughter）可作变量引用', () => {
     expect(evaluate("Mike's daughter", { "Mike's daughter": 12 }).value).toBe(12);
   });
@@ -57,7 +57,7 @@ describe('@floken/feel · F2 带空格 / 撇号的名字', () => {
   });
 });
 
-describe('@floken/feel · F2 instance of', () => {
+describe('@floken-io/feel · F2 instance of', () => {
   it('标量类型', () => {
     expect(evaluate('1 instance of number').value).toBe(true);
     expect(evaluate('"a" instance of number').value).toBe(false);
@@ -136,7 +136,7 @@ describe('@floken/feel · F2 instance of', () => {
   });
 });
 
-describe('@floken/feel · F2 clock 注入（05-feel §6.1）', () => {
+describe('@floken-io/feel · F2 clock 注入（05-feel §6.1）', () => {
   beforeAll(async () => {
     await ensureTemporal();
   });
@@ -158,7 +158,7 @@ describe('@floken/feel · F2 clock 注入（05-feel §6.1）', () => {
   });
 });
 
-describe('@floken/feel · F2 S-FEEL 白名单（03-engine §7.2）', () => {
+describe('@floken-io/feel · F2 S-FEEL 白名单（03-engine §7.2）', () => {
   it('白名单内 → 正常求值', () => {
     expect(evaluate('abs(-1)', {}, { allowedFunctions: ['abs'] }).value).toBe(1);
   });
@@ -171,7 +171,7 @@ describe('@floken/feel · F2 S-FEEL 白名单（03-engine §7.2）', () => {
   });
 });
 
-describe('@floken/feel · F2 资源上限与选项契约', () => {
+describe('@floken-io/feel · F2 资源上限与选项契约', () => {
   it('maxNodes 超限 → 抛 FEEL_LIMIT_MAX_NODES', () => {
     const err = catchError(() => evaluate('1 + 2 + 3 + 4 + 5', {}, { maxNodes: 3 }));
     expect(err).toBeInstanceOf(FeelLimitError);
@@ -211,7 +211,7 @@ describe('@floken/feel · F2 资源上限与选项契约', () => {
   /*
    * ★ 算符表里**没有**「字符串 → 数字」这一档，故算术操作数只收真数字（TCK 0100）。
    *   曾有一个 `strictCoercion` 选项管"要不要宽容转换"，与 TCK 直接冲突，已废 ——
-   *   隐式转换是 DMN typeRef 强制（@floken/dmn 的 coerceTypeRef）与内置函数实参的事，不是算符的事。
+   *   隐式转换是 DMN typeRef 强制（@floken-io/dmn 的 coerceTypeRef）与内置函数实参的事，不是算符的事。
    */
   it('算术操作数不做字符串→数字隐式转换（TCK 0100 error_when_*）', () => {
     for (const src of ['10 + "10"', '"10" + 10', '10 - "10"', '10 * "10"', '10 / "10"']) {
@@ -224,7 +224,7 @@ describe('@floken/feel · F2 资源上限与选项契约', () => {
   });
 });
 
-describe('@floken/feel · F2 时间能力', () => {
+describe('@floken-io/feel · F2 时间能力', () => {
   // 「未加载 → 抛带可执行提示的错误」属于**进程启动态**的性质，
   // 只能在干净进程里验证 —— 见 test/cold-start.test.ts。
   // （本文件顶部已 import ./temporal，而注册是全局且不可逆的，同进程复现不出未加载态。）

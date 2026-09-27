@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 数值内置函数
+ * @floken-io/feel · 数值内置函数
  *
  * 两条口径（TCK 逐条钉死，见 `./helpers.ts` 顶部注释）：
  * 1. **形参有类型**：少给/多给参数、错形参名、传 `null` 或非 number → **抛错**，

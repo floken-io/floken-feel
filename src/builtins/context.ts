@@ -1,5 +1,5 @@
 /**
- * @floken/feel · 上下文（context）内置函数
+ * @floken-io/feel · 上下文（context）内置函数
  *
  * 口径来源：DMN 1.4 §10.3.4.6（`get value` / `get entries`）与
  * §10.3.4.7（`context` / `context put` / `context merge`；后者是 DMN 1.5 增补的
