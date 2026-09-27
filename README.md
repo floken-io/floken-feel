@@ -484,6 +484,9 @@ highlight('1 + "abc');   // 未闭合字符串
 
 完整可运行示例见 **`examples/browser-lint.html`**（起个静态服务器打开即可，例如
 `python -m http.server`；`file://` 下浏览器会拦 ES module，必须用 http）。
+该示例除着色/波浪线外，还用 `parseWithDiagnostics()` 渲染一棵 **AST 树**：
+诊断只挂在**最小的包含节点**上（不是整条路径染红），点节点会在编辑器里选中对应源码区间；
+语法没走完时 `ast` 为 `null`，此时退化为「按括号分组的词法树」（仍是树，但只有括号层级）。
 
 网页端做错误提示的正确姿势（与 `04-dmn` §14.1 同源）：
 - **静态/语法错误** → `diagnose()`：`Diagnostic[]`，带 `start`/`end`，直接画波浪线；

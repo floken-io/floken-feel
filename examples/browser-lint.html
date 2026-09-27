@@ -95,12 +95,31 @@
   .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
   code { background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
 
-  /* AST 树 */
-  .tree { font: 12.5px/1.7 Consolas, monospace; overflow-x: auto; }
-  .tree ul { list-style: none; margin: 0; padding-left: 16px; border-left: 1px dotted var(--border); }
-  .tree > ul { padding-left: 0; border-left: none; }
-  .tree li { margin: 1px 0; }
-  .node { display: inline-block; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel); }
+  /* AST 树：竖线 + 横向短线的连接线，让层级一眼可辨（光靠缩进看着就是列表） */
+  .tree { font: 12.5px/1.75 Consolas, monospace; overflow-x: auto; padding: 4px 2px; }
+  .tree ul { list-style: none; margin: 0; padding: 0; }
+  .tree li { position: relative; padding-left: 20px; margin: 1px 0; }
+  .tree > ul > li { padding-left: 0; }
+  /* 竖线：贯穿同级所有 li（最后一个只画到自己那一行） */
+  .tree li::after {
+    content: ''; position: absolute; left: 2px; top: 0; bottom: 0;
+    border-left: 1px solid var(--border);
+  }
+  .tree li:last-child::after { bottom: auto; height: 0.9em; }
+  /* 横线：从竖线拉到本节点 */
+  .tree li::before {
+    content: ''; position: absolute; left: 3px; top: 0.9em; width: 13px;
+    border-top: 1px solid var(--border);
+  }
+  .tree > ul > li::before, .tree > ul > li::after { display: none; }
+  .tree li.collapsed > ul { display: none; }
+  .tree .tw {
+    display: inline-block; width: 12px; text-align: center; cursor: pointer;
+    color: var(--muted); user-select: none;
+  }
+  .tree .tw.leaf { cursor: default; opacity: .3; }
+  .node { display: inline-block; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel); cursor: pointer; }
+  .node:hover { border-color: var(--accent); }
   .node .ty { color: var(--accent); font-weight: 600; }
   .node .pos { color: var(--muted); }
   .node .txt { color: var(--k-string); }
@@ -109,6 +128,13 @@
   .tag { font-size: 11px; padding: 0 5px; border-radius: 3px; background: var(--k-error); color: #fff; margin-left: 5px; }
   .tag.warn { background: var(--k-boolean); }
   .empty { color: var(--muted); font-size: 13px; }
+  /* 点树节点 → 在编辑器里选中对应源码区间 */
+  textarea::selection, textarea::-moz-selection {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .examples button { font-size: 12.5px; padding: 4px 10px; }
+  .examples button.on { border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
@@ -119,14 +145,21 @@
 </p>
 
 <div class="card">
-  <h2>表达式（试试敲到一半，比如 <code>date("2020-01-0</code> 或 <code>1 + </code>）</h2>
+  <h2>表达式（打开就有树；点下面的示例按钮可切换场景）</h2>
+  <div class="examples" id="examples">
+    <button data-ex="if list contains(tags, &quot;vip&quot;) then substring(age, 2) else name" class="on">① 运行期类型错（有完整树）</button>
+    <button data-ex="1 + ">② 语法错：漏右操作数</button>
+    <button data-ex="if list contains(tags, &quot;vip&quot;) then @&quot;2020-01-01&quot; else substring(name, ">③ 语法未闭合</button>
+    <button data-ex="a + b * 2 &gt; 10 and string length(name) &gt; 1">④ 深一点的正常树</button>
+  </div>
   <div class="editor" id="editor">
     <div class="layer" id="layer"></div>
-    <textarea id="input" spellcheck="false" rows="3">if list contains(tags, "vip") then @"2020-01-01" else substring(name, </textarea>
+    <textarea id="input" spellcheck="false" rows="3">if list contains(tags, "vip") then substring(age, 2) else name</textarea>
   </div>
   <div class="hint">
     着色走 <code>highlight(src)</code>；波浪线走 <code>diagnose(src)</code>。
     两者**共用同一套名字合并规则**，所以着色边界 === 解析边界（不会出现"划错位置"）。
+    免费送的：<code>1 + </code> 这种"末尾少东西"是零宽诊断（<code>start === end</code>），画成一个红色竖标记。
   </div>
   <ul class="diags" id="diags" style="margin-top:12px"></ul>
 </div>
@@ -139,15 +172,17 @@
 </div>
 
 <div class="card">
-  <h2>解析树（AST）—— 红底节点就是"错在这"的那棵子树</h2>
+  <h2>解析树（AST）—— 红/橙节点就是"错在这"的那棵子树</h2>
   <div class="hint">
     <code>parseWithDiagnostics(src)</code> 给 AST；诊断区间与节点区间求**包含**（不是相交），
-    **最小的那个包含节点**才是出错点，只有它挂诊断码 —— 所以 `list contains(tags,"vip") + 1`
-    会标在 `binary` 那层，而不是把整条路径染红。
-    ⚠️ 已知粒度限制：**运行期诊断**（橙色 tag）覆盖的是**整个出错节点**（如整个 `call`），
-    不细到具体实参 —— 看具体原因请把鼠标停在 tag 上看 `message`（例如
-    “`substring` 期望 string 却拿到 number”）。语法诊断（红色）精确到 token。
-    语法没走完时建不出树（<code>ast</code> 为 <code>null</code>），此时退化显示词法 token 流。
+    **最小的那个包含节点**才是出错点，只有它挂诊断码 —— 所以 <code>list contains(tags,"vip") + 1</code>
+    会标在 <code>binary</code> 那层，而不是把整条路径染红。<br>
+    · <span class="tag">红</span> = 语法诊断；<span class="tag warn">橙</span> = 运行期诊断（点上面"求值"后出现，鼠标停在 tag 上看 <code>message</code>）。<br>
+    · 点节点 → 在编辑器里**选中它对应的源码区间**（想看"错在哪几个字符"就用这个）；点左侧 ▾ 折叠子树。<br>
+    · ⚠️ 已知粒度限制：**运行期诊断**覆盖的是**整个出错节点**（如整个 <code>call</code>），不细到实参（例：
+      <code>substring(age,2)</code> 报的是整段 <code>call</code>，不是 <code>age</code> 那一个实参）。语法诊断（红）精确到 token。<br>
+    · 语法没走完时建不出树（<code>ast</code> 为 <code>null</code>），此时退化成**按括号分组的词法树**（示例 ②③）——
+      它也是树，但只有括号层级，没有语法结构。
   </div>
   <div class="tree" id="tree" style="margin-top:10px"></div>
 </div>
@@ -252,25 +287,75 @@
     return parts.join(' ');
   }
 
+  /** 折叠把手：有子节点才可点，叶子显示一个淡点占位（保持层级对齐） */
+  const toggle = (n) => '<span class="tw' + (n ? '' : ' leaf') + '">' + (n ? '▾' : '·') + '</span>';
+
+  /** token 区间是否落在某条诊断里（供退化视图标红用） */
+  const hitDiag = (all, from, to) => all.some((d) =>
+    d.end > d.start ? d.start < to && d.end > from : d.start >= from && d.start <= to);
+
+  /**
+   * 退化视图：语法没走完 → 建不出 AST。
+   * 这里**不铺平成列表**，而是按括号把 token 分组，仍然渲染成一棵树（只有括号层级，没有语法结构）。
+   */
+  function tokenTree(src, all) {
+    let tk = [];
+    try { tk = tokens(src); } catch { tk = []; }
+    if (!tk.length) {
+      tk = highlight(src).map((s) => ({ type: s.kind, value: s.value, from: s.from, to: s.to }));
+    }
+
+    const root = { kids: [] };
+    let cur = root;
+    const stack = [];
+    for (const t of tk) {
+      const v = String(t.value === undefined ? '' : t.value);
+      const n = { t, kids: [] };
+      cur.kids.push(n);
+      if (v === '(' || v === '[' || v === '{') { stack.push(cur); cur = n; }
+      else if (v === ')' || v === ']' || v === '}') { if (stack.length) cur = stack.pop(); }
+    }
+
+    const walk = (n) => {
+      const t = n.t;
+      const from = t.from === undefined ? t.start : t.from;
+      const to = t.to === undefined ? t.end : t.to;
+      const bad = hitDiag(all, from, to);
+      const chip =
+        '<span class="node' + (bad ? ' err' : '') + '" data-s="' + from + '" data-e="' + to + '">' +
+        '<span class="ty">' + esc(String(t.type)) + '</span> ' +
+        '<span class="txt">' + esc(String(t.value === undefined ? '' : t.value)) + '</span> ' +
+        '<span class="pos">[' + from + ',' + to + ')</span></span>';
+      return '<li>' + toggle(n.kids.length) + chip +
+        (n.kids.length ? '<ul>' + n.kids.map(walk).join('') + '</ul>' : '') + '</li>';
+    };
+    // 末尾挂一条"语法在此中断"，让人一眼看到是从哪儿断的
+    const broke = all[0]
+      ? '<li>' + toggle(0) +
+        '<span class="node err" data-s="' + all[0].start + '" data-e="' + all[0].start + '">' +
+        '<span class="ty">⛔</span> <span class="kv">语法在此中断 @' + all[0].start + '：' + esc(all[0].code) + '</span></span></li>'
+      : '';
+    // ★ 无论如何都套一层根：没有括号可分组时（如 `1 + `）也至少是棵树，而不是一条平列表
+    const d0 = all[0];
+    const head =
+      '<span class="node err" data-s="0" data-e="' + src.length + '">' +
+      '<span class="ty">⛔ 未建成</span> ' +
+      '<span class="kv">' + (d0 ? esc(d0.code) + ' @' + d0.start : '语法未走完') + '</span></span>';
+    const body = root.kids.map(walk).join('') + broke;
+    return '<li>' + toggle(root.kids.length + (broke ? 1 : 0)) + head + '<ul>' + body + '</ul></li>';
+  }
+
   function renderTree(src) {
     const parsed = parseWithDiagnostics(src);
     const all = parsed.diagnostics.map((d) => Object.assign({}, d, { kind: 'syntax' }))
       .concat(runtimeDiags.map((d) => Object.assign({}, d, { kind: 'runtime' })));
 
     if (!parsed.ast) {
-      // 建不出树：退化显示词法视图（token 流；词法也出错时再退到 highlight 的 span）
-      let tk = [];
-      try { tk = tokens(src); } catch { tk = []; }
-      const fb = tk.length ? tk : highlight(src).map((s) => ({ type: s.kind, value: s.value, from: s.from, to: s.to }));
+      const d0 = parsed.diagnostics[0];
       treeEl.innerHTML =
-        '<div class="empty">语法未走完，建不出 AST（' +
-        (parsed.diagnostics[0] ? esc(parsed.diagnostics[0].code) : '—') + '）。下面是词法视图：</div><ul>' +
-        fb.map((t) => '<li><span class="node' + (t.type === 'error' ? ' err' : '') + '">' +
-          '<span class="ty">' + esc(String(t.type)) + '</span> ' +
-          '<span class="txt">' + esc(String(t.value === undefined ? '' : t.value)) + '</span> ' +
-          '<span class="pos">[' + (t.from === undefined ? t.start : t.from) + ',' +
-          (t.to === undefined ? t.end : t.to) + ')</span></span></li>').join('') +
-        '</ul>';
+        '<div class="empty">⚠ 语法未走完，建不出 AST（' + (d0 ? esc(d0.code) + ' @' + d0.start : '—') +
+        '）。下面是<strong>按括号分组的词法树</strong> —— 仍是树，但只有括号层级、没有语法结构：</div>' +
+        '<ul>' + tokenTree(src, all) + '</ul>';
       return;
     }
 
@@ -279,20 +364,22 @@
       const kids = childrenOf(node);
       // 只在**最小的包含节点**上挂诊断码（更深的子节点若也包含，说明该节点还不够具体）
       const deeper = kids.some((kv) => all.some((d) => contains(kv[1], d)));
+      const hit = mine.length && !deeper;
       const txt = src.slice(node.start, node.end);
-      return '<li><span class="node' + (mine.length ? ' err' : '') + '">' +
+      const chip =
+        '<span class="node' + (hit ? ' err' : '') + '" data-s="' + node.start + '" data-e="' + node.end + '">' +
         (label ? '<span class="kv">' + esc(label) + ':</span> ' : '') +
         '<span class="ty">' + esc(node.type) + '</span> ' +
         '<span class="pos">[' + node.start + ',' + node.end + ')</span> ' +
         (txt.length && txt.length <= 28 ? '<span class="txt">' + esc(txt) + '</span> ' : '') +
         (attrText(node) ? '<span class="kv">' + esc(attrText(node)) + '</span> ' : '') +
-        (mine.length && !deeper
+        (hit
           ? mine.map((d) => '<span class="tag' + (d.kind === 'runtime' ? ' warn' : '') + '" title="' +
               esc(d.message || '') + '">' + esc(d.code) + '</span>').join('')
           : '') +
-        '</span>' +
-        (kids.length ? '<ul>' + kids.map((kv) => walk(kv[1], kv[0])).join('') + '</ul>' : '') +
-        '</li>';
+        '</span>';
+      return '<li>' + toggle(kids.length) + chip +
+        (kids.length ? '<ul>' + kids.map((kv) => walk(kv[1], kv[0])).join('') + '</ul>' : '') + '</li>';
     };
     // 落在任何节点之外（通常是"表达式末尾少了东西"）的诊断也要让人看见
     const anyHit = (node, d) => contains(node, d) || childrenOf(node).some((kv) => anyHit(kv[1], d));
@@ -305,13 +392,47 @@
       '<ul>' + walk(parsed.ast, '') + '</ul>';
   }
 
+  // 树上交互：点 ▾ 折叠子树 / 点节点 → 选中它对应的源码区间（"错在哪几个字符"）
+  treeEl.addEventListener('click', (e) => {
+    const tw = e.target.closest('.tw');
+    if (tw && !tw.classList.contains('leaf')) {
+      const liEl = tw.parentElement;
+      const collapsed = liEl.classList.toggle('collapsed');
+      tw.textContent = collapsed ? '▸' : '▾';
+      return;
+    }
+    const chip = e.target.closest('.node');
+    if (chip && chip.dataset.s !== undefined) {
+      input.focus();
+      input.setSelectionRange(Number(chip.dataset.s), Number(chip.dataset.e));
+    }
+  });
+
+  const exEl = document.getElementById('examples');
+  const clearActive = () => { for (const b of exEl.querySelectorAll('button')) b.classList.remove('on'); };
+
   input.addEventListener('input', () => {
     runtimeDiags = [];
+    clearActive();
     render(input.value);
     renderTree(input.value);
   });
   input.addEventListener('focus', () => editor.classList.add('focus'));
   input.addEventListener('blur', () => editor.classList.remove('focus'));
+
+  // 示例一键切换：省得手动敲出语法错/类型错
+  exEl.addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-ex]');
+    if (!b) return;
+    clearActive();
+    b.classList.add('on');
+    input.value = b.dataset.ex;
+    runtimeDiags = [];
+    out.textContent = '（点上面的按钮）';
+    render(input.value);
+    renderTree(input.value);
+  });
+
   render(input.value);
   renderTree(input.value);
 
