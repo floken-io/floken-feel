@@ -29,8 +29,8 @@
     "tck": "node tooling/tck/run.mjs --json",
     "tck:baseline": "node tooling/tck/run.mjs --write-baseline",
     "changeset": "changeset",
-    "release": "pnpm build && pnpm verify && changeset publish",
-    "prepublishOnly": "pnpm build && pnpm verify"
+    "release": "npm run build && npm run verify && changeset publish",
+    "prepublishOnly": "npm run build && npm run verify"
   },
   "dependencies": {
     "temporal-polyfill": ">=1.0.5 <2.0.0"

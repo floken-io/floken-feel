@@ -13,7 +13,12 @@ export default defineConfig({
   target: 'node22',
   platform: 'neutral',
   dts: true,
-  sourcemap: true,
+  // ★ 不开 sourcemap：`.map` 的 `sourcesContent` 会把**原始 TS 源码整段嵌进去**
+  // （实测 feel 曾 22 万字符，占 unpacked 体积 67%），等于"源码跟着包发出去"。
+  // 发布策略是「npm 只发产物，源码只在 GitHub」，所以这里彻底不生成 ——
+  // dist js 末尾也就不会有 `//# sourceMappingURL=` 那条（浏览器 devtools 不会再报加载失败）。
+  // 调试走 src（vitest 直接跑源码），不依赖 dist 断点。
+  sourcemap: false,
   splitting: true,
   treeshake: true,
   clean: true,
