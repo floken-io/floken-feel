@@ -1,5 +1,5 @@
 /**
- * floken-feel · **错误双模式**（`errorMode`）测试
+ * @floken/feel · **错误双模式**（`errorMode`）测试
  *
  * 背景：DMN 1.4 §10.3.2.13.1 与 TCK 的 `errorResult="true"` 是**两套口径**：
  * - 规范（Camunda / feelin / Drools 默认）：实参不符形参域、结果无定义 → `null`（unknown）；

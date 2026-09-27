@@ -1,5 +1,5 @@
 /**
- * floken-feel · 值语义公共工具
+ * @floken/feel · 值语义公共工具
  *
  * 三值逻辑（NFR-F14 对齐）：null 参与的比较/布尔运算结果为 null（未知），而非 false。
  */
@@ -21,8 +21,8 @@ export function rangeContains(range: FeelRangeLike, value: Value): Value {
   if (value === null) return null;
 
   // 端点 `null` 表示**无界**（FEEL 10.3.2.5：`<= 10` ≡ `(null..10]`、`>= 10` ≡ `[10..null)`）。
-  // 2026-09-25 修复：此前把"null 端点"与"不可比较"混为一谈，
-  // 凡遇到无界区间一律返回 null —— TCK 里所有 `x in <op> n` 断言因此全错。
+  // "null 端点"与"不可比较"是两件事，不可混为一谈：
+  // 凡遇到无界区间一律返回 null 的话，TCK 里所有 `x in <op> n` 断言会全错。
   const hasFrom = range.from !== null;
   const hasTo = range.to !== null;
   const low = hasFrom ? compareValues(range.from, value) : null;

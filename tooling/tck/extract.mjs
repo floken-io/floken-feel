@@ -1,5 +1,5 @@
 /**
- * floken-feel · TCK 工具（工-A）· FEEL-only 用例提取器
+ * @floken/feel · TCK 工具（工-A）· FEEL-only 用例提取器
  *
  * 用途：把 DMN TCK 语料里 `-feel-` 专项用例（79 组 / B 口径）抽成可跑的 JSON 断言集。
  * 这是 `05-包需求-floken-feel.md` §7.3 的「工-A，本包生命线」。

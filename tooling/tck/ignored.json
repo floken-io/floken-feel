@@ -12,8 +12,8 @@
     "判据：『换输入也救不回，且救回它需要本包之外的能力（JVM / DMN 类型声明 / 宿主绑定）』。"
   ],
   "labels": {
-    "0076-feel-external-java": "NFR-F14：全部 18 条都是 `external {java: {class, method signature}}` 的 Java 绑定，需要 JVM 与宿主类路径。纯 FEEL 引擎（floken-feel 零宿主依赖）没有这一层，按规范允许的 IGNORED 处理；Java 绑定属于宿主适配器的职责。",
-    "0082-feel-coercion": "NFR-F14：本组考的**不是 FEEL 语义，而是 DMN 类型声明层的强制转换** —— decision / BKM 的 `typeRef`（含 `lambda_number_returns_number` 这类函数型）与「结果值 / 实参值」之间的校验与强转（`[10]`→`10`、`[\"foo\"]`→`\"foo\"`、`1+1`→string 失败），以及 decisionService 调用。FEEL 表达式引擎没有「decision 的声明类型」这一层（feel 零 floken 依赖、只读表达式），该职责在 `floken-dmn`。与 0076 同理归 IGNORED，不因它改 FEEL 语义。"
+    "0076-feel-external-java": "NFR-F14：全部 18 条都是 `external {java: {class, method signature}}` 的 Java 绑定，需要 JVM 与宿主类路径。纯 FEEL 引擎（@floken/feel 零宿主依赖）没有这一层，按规范允许的 IGNORED 处理；Java 绑定属于宿主适配器的职责。",
+    "0082-feel-coercion": "NFR-F14：本组考的**不是 FEEL 语义，而是 DMN 类型声明层的强制转换** —— decision / BKM 的 `typeRef`（含 `lambda_number_returns_number` 这类函数型）与「结果值 / 实参值」之间的校验与强转（`[10]`→`10`、`[\"foo\"]`→`\"foo\"`、`1+1`→string 失败），以及 decisionService 调用。FEEL 表达式引擎没有「decision 的声明类型」这一层（feel 零 floken 依赖、只读表达式），该职责在 `@floken/dmn`。与 0076 同理归 IGNORED，不因它改 FEEL 语义。"
   },
   "cases": {
     "0057-feel-context#009": "TCK 自身矛盾 → 从规范（DMN 1.4 §10.3.2.9 / §10.3.4.6）：`{ a: 1 }.b` 是**路径表达式取不存在的键**，规范口径是 `null`（unknown），且本组同批的 `#007` 等用例正是这么判的；这里却挂了 `errorResult=\"true\"`。取不存在的键返回 null 是 FEEL 的核心语义（上下文是稀疏映射，不是强类型结构），不能为凑 errorResult 改成抛错。",

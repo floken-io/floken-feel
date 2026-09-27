@@ -1,7 +1,7 @@
 /**
- * floken-feel · 词法高亮
+ * @floken/feel · 词法高亮
  *
- * 面向编辑器（`floken-designer`）的语法着色：把源码切成带类别的 span。
+ * 面向编辑器（`@floken/designer`）的语法着色：把源码切成带类别的 span。
  * **纯词法层实现**，只依赖 lexer 与多词名表 —— 不装载求值器、不装载内置函数库，
  * 因此可安全地用在 `.` 与 `./editor` 两个子路径。
  */

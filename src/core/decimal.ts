@@ -1,5 +1,5 @@
 /**
- * floken-feel · 十进制算术（decimal128）
+ * @floken/feel · 十进制算术（decimal128）
  *
  * ★ 为什么要有这个模块：DMN 1.5 §10.3.2.1 规定 FEEL 的 `number` 是
  *   **IEEE 754-2008 decimal128**（34 位有效数字），**不是** JS 的 binary64。

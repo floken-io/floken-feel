@@ -1,5 +1,5 @@
 /**
- * floken-feel · 布尔 / 三值逻辑内置函数
+ * @floken/feel · 布尔 / 三值逻辑内置函数
  *
  * `all` / `any` 是布尔聚合（对标 DMN 的 `all(list)` / `any(list)`），
  * 与 `and` / `or` 一样保持三值语义：含未知且无法短路时返回 null。

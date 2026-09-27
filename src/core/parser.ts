@@ -1,5 +1,5 @@
 /**
- * floken-feel · 语法分析器（递归下降，零依赖）
+ * @floken/feel · 语法分析器（递归下降，零依赖）
  *
  * 支持：字面量 / 算术 / 比较 / 与或非 / 列表 / 区间 / 上下文 / 函数调用 /
  *      路径访问 / if-then-else / for-in-return / every|some-in-satisfies /
@@ -461,8 +461,8 @@ class Parser {
           /*
            * **形参类型标注** `function(a: number) a`（DMN 1.5 §10.3.14）。
            *
-           * ★ 标注**必须保留**（此前这里写的是"只解析不保留"，被 TCK 0082 `fd_002`
-           *   证伪）：该用例是 `function(arg: number) arg` 后接 `fn("foo")`，
+           * ★ 标注**必须保留**（若"只解析不保留"，TCK 0082 `fd_002` 就会失败）：
+           *   该用例是 `function(arg: number) arg` 后接 `fn("foo")`，
            *   期望 **null**（errorResult）—— 带类型的形参在**调用时**校验实参，
            *   类型不符则整个调用不适用。
            */

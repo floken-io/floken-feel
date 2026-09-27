@@ -1,5 +1,5 @@
 /**
- * floken-feel · 核心类型
+ * @floken/feel · 核心类型
  *
  * 设计要点：
  * 1. 公开 API 形态对标 feelin（{ value, warnings }），但实现完全自研（Q9：feelin 源码只读不拷）。

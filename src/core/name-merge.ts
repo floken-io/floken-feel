@@ -1,5 +1,5 @@
 /**
- * floken-feel · 名字合并（空格名 / 多词内置名）
+ * @floken/feel · 名字合并（空格名 / 多词内置名）
  *
  * 词法把 `list contains`、`Mike's daughter` 都切成若干 `name`/`kw` token，
  * 这里把它们合成**一个**名字 token。

@@ -1,5 +1,5 @@
 /**
- * floken-feel · 延迟能力登记表
+ * @floken/feel · 延迟能力登记表
  *
  * 有些内置函数的**实现**住在子路径里（当前只有 `./temporal`）。
  * 核心必须能在**不 import 那个子路径**的前提下认出这些名字，
@@ -54,7 +54,7 @@ export const TEMPORAL_UNARY_MINUS = '-@';
 /**
  * ★ **duration 与标量乘除**的延迟能力键（DMN 1.5 §10.3.2.3.4）。
  *
- * 规范定义的四条（此前本包全部缺失 → 求值得 `null` + `EVAL_TYPE_MISMATCH`）：
+ * 规范定义的四条：
  *   `duration * number`、`number * duration`、`duration / number`、`duration / duration → number`。
  * 它不能写在 core 里：duration 的分量缩放必须走 Temporal（`years/months` 与
  * `days/hours/…` 两套量纲要分别处理，且非整数倍要在量纲内平衡，如 `P1D * 2.5 = P2DT12H`）。
@@ -68,7 +68,7 @@ export const TEMPORAL_SCALE = '*@';
 /**
  * ★ **两个同类时间值相减**的延迟能力键（DMN 1.5 §10.3.1.3 Subtraction 表的后三档）。
  *
- * 规范定义（此前本包全部缺失 → 求值得 `null`）：
+ * 规范定义：
  *   `date - date`        → days and time duration（按**天**）
  *   `time - time`        → days and time duration（按**小时**）
  *   `dateTime - dateTime`→ days and time duration（按**天**）

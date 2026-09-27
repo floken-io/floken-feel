@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { evaluate, unaryTest, isFunction } from '../src/entries/index.js';
 
-describe('floken-feel · F1 方括号：下标 / 过滤统一', () => {
+describe('@floken/feel · F1 方括号：下标 / 过滤统一', () => {
   it('数字 → 下标（1-based，负号倒数，越界为 null）', () => {
     expect(evaluate('[1, 2, 3][1]').value).toBe(1);
     expect(evaluate('[1, 2, 3][3]').value).toBe(3);
@@ -39,7 +39,7 @@ describe('floken-feel · F1 方括号：下标 / 过滤统一', () => {
   });
 });
 
-describe('floken-feel · F1 in 运算符', () => {
+describe('@floken/feel · F1 in 运算符', () => {
   it('区间包含', () => {
     expect(evaluate('5 in [1..10]').value).toBe(true);
     expect(evaluate('5 in ]1..10[').value).toBe(true);
@@ -69,7 +69,7 @@ describe('floken-feel · F1 in 运算符', () => {
   });
 });
 
-describe('floken-feel · F1 between', () => {
+describe('@floken/feel · F1 between', () => {
   it('闭区间判定', () => {
     expect(evaluate('5 between 1 and 10').value).toBe(true);
     expect(evaluate('1 between 1 and 10').value).toBe(true);
@@ -100,7 +100,7 @@ describe('floken-feel · F1 between', () => {
   });
 });
 
-describe('floken-feel · F1 函数字面量', () => {
+describe('@floken/feel · F1 函数字面量', () => {
   it('定义后立即调用', () => {
     expect(evaluate('(function(a, b) a + b)(1, 2)').value).toBe(3);
   });
@@ -128,13 +128,13 @@ describe('floken-feel · F1 函数字面量', () => {
   });
 });
 
-describe('floken-feel · F1 上下文语义', () => {
+describe('@floken/feel · F1 上下文语义', () => {
   it('上下文字面量后一项可见前一项', () => {
     expect(evaluate('{ a: 1, b: a + 1, c: b * 10 }.c').value).toBe(20);
   });
 });
 
-describe('floken-feel · F1 新增内置函数', () => {
+describe('@floken/feel · F1 新增内置函数', () => {
   it('product / stddev', () => {
     expect(evaluate('product([2, 3, 4])').value).toBe(24);
     expect(evaluate('stddev([1, 2, 3, 4])').value).toBeCloseTo(1.2909944487358056, 10);
@@ -177,7 +177,7 @@ describe('floken-feel · F1 新增内置函数', () => {
   });
 });
 
-describe('floken-feel · F1 注释', () => {
+describe('@floken/feel · F1 注释', () => {
   it('注释被语法忽略', () => {
     expect(evaluate('1 + 2 // 注释').value).toBe(3);
     expect(evaluate('// 只有注释\n5').value).toBe(5);

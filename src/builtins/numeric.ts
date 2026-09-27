@@ -1,5 +1,5 @@
 /**
- * floken-feel · 数值内置函数
+ * @floken/feel · 数值内置函数
  *
  * 两条口径（TCK 逐条钉死，见 `./helpers.ts` 顶部注释）：
  * 1. **形参有类型**：少给/多给参数、错形参名、传 `null` 或非 number → **抛错**，
@@ -69,8 +69,8 @@ export const NUMERIC_BUILTINS: Record<string, NativeFn> = {
     /*
      * ★ 十进制优先：`modulo(10.1, 4.5)` 必须是 **1.1**，double 路径给的是
      *   1.0999999999999996（TCK 0056 #017a~#017d 逐条钉死）。
-     *   floor 语义（结果符号跟随 divisor）由 `decimalModulo` 保证，与这里原来的
-     *   算式一致；decimal 路径不可用时回退原式，行为不变。
+     *   floor 语义（结果符号跟随 divisor）由 `decimalModulo` 保证；
+     *   decimal 路径不可用时回退 double 算式，语义一致。
      */
     return decimalModulo(dividend, divisor) ?? dividend - divisor * Math.floor(dividend / divisor);
   },

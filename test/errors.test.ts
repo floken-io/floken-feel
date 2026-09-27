@@ -1,5 +1,5 @@
 /**
- * floken-feel · 错误契约一致性测试
+ * @floken/feel · 错误契约一致性测试
  *
  * 对应 AGENTS.md §5「错误处理契约」：本测试就是那张契约的可执行版本。
  * 五包各自持有一份等价测试（不共享运行时基类，只共享**形状**）。
@@ -47,7 +47,7 @@ function catchError(fn: () => unknown): FeelError {
   throw new Error('expected the call to throw, but it did not');
 }
 
-describe('floken-feel · 错误对象结构契约（AGENTS.md §5.2）', () => {
+describe('@floken/feel · 错误对象结构契约（AGENTS.md §5.2）', () => {
   it('每个错误子类都带齐 name / code / pkg / position / node / hint / details', () => {
     for (const Ctor of ERROR_CLASSES) {
       const err = new Ctor('message', {
@@ -80,7 +80,7 @@ describe('floken-feel · 错误对象结构契约（AGENTS.md §5.2）', () => {
   });
 });
 
-describe('floken-feel · 错误码命名规则（AGENTS.md §5.3）', () => {
+describe('@floken/feel · 错误码命名规则（AGENTS.md §5.3）', () => {
   it('全部符合 <域>_<类别>_<对象>，全大写蛇形，域为 FEEL', () => {
     expect(ALL_CODES.length).toBeGreaterThan(10);
     for (const code of ALL_CODES) {
@@ -106,7 +106,7 @@ describe('floken-feel · 错误码命名规则（AGENTS.md §5.3）', () => {
   });
 });
 
-describe('floken-feel · 两条通道不许混（AGENTS.md §5.1）', () => {
+describe('@floken/feel · 两条通道不许混（AGENTS.md §5.1）', () => {
   it('语法错 → 抛，且带 code + position', () => {
     const err = catchError(() => parseExpression('1 +'));
     expect(err).toBeInstanceOf(FeelSyntaxError);
@@ -155,7 +155,7 @@ describe('floken-feel · 两条通道不许混（AGENTS.md §5.1）', () => {
   });
 });
 
-describe('floken-feel · 诊断形状（Diagnostic）', () => {
+describe('@floken/feel · 诊断形状（Diagnostic）', () => {
   it('diagnostic() 缺省 severity = warn，且不含多余键', () => {
     const d = diagnostic({ code: 'FEEL_EVAL_TEST', message: 'm', start: 1, end: 2 });
     expect(d).toEqual({
@@ -183,7 +183,7 @@ describe('floken-feel · 诊断形状（Diagnostic）', () => {
   });
 });
 
-describe('floken-feel · 延迟能力登记表不漂移', () => {
+describe('@floken/feel · 延迟能力登记表不漂移', () => {
   it('TEMPORAL_FUNCTIONS ⊂ ./temporal 实现（每项都有实现）', () => {
     expect(TEMPORAL_FUNCTIONS.size).toBeGreaterThan(5);
     for (const name of TEMPORAL_FUNCTIONS) {

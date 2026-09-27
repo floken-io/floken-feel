@@ -1,5 +1,5 @@
 /**
- * floken-feel · 求值器
+ * @floken/feel · 求值器
  *
  * 三值逻辑：null 参与的比较/布尔运算得到 null（未知），不静默降级为 false。
  *
@@ -362,7 +362,7 @@ const PARAM_ERROR_CODES = new Set<string>([
  *   只有 `+` 有字符串的那一档，且是 `string + string` → 拼接（见 `binary` 分支）。
  *
  * ⚠️ 曾在此处按 `strictCoercion` 选项宽容转换（`"1" + 1` = 2），与 TCK 直接冲突，已废。
- *   隐式转换是 **DMN 的 typeRef 强制**（`floken-dmn` 的 `coerceTypeRef`）与
+ *   隐式转换是 **DMN 的 typeRef 强制**（`@floken/dmn` 的 `coerceTypeRef`）与
  *   **内置函数实参**的事，不是算符的事 —— 两者不可混为一谈。
  */
 function num(v: Value): number | null {
@@ -690,7 +690,7 @@ export function evaluateNode(
       /*
        * FEEL 10.3.1.8：**非列表的基底按单元素列表处理** ——
        * `100[1]` → `100`、`"foo"[1]` → `"foo"`、`true[true]` → `[true]`、`true[false]` → `[]`。
-       * 此前对非列表直接给 null + 诊断，TCK 0069 的 012~023 与 0068 的 list_006~014 全错。
+       * 若对非列表直接给 null + 诊断，TCK 0069 的 012~023 与 0068 的 list_006~014 会全错。
        */
       const base = isList(raw) ? raw : [raw];
       // 先在原上下文试算（静默）：能算出数字/列表即为「下标」语义

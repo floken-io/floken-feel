@@ -49,7 +49,7 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
 
 | 口径 | 断言数 | 谁能跑 |
 |---|---:|---|
-| **A · 完整 DMN TCK**（含 DRG 遍历 / 决策表 / 命中策略） | 3495（CL3 3369） | ❌ 本包跑不了 → 属 `floken-dmn` |
+| **A · 完整 DMN TCK**（含 DRG 遍历 / 决策表 / 命中策略） | 3495（CL3 3369） | ❌ 本包跑不了 → 属 `@floken/dmn` |
 | **B · FEEL-only**（`-feel-` 中缀的 79 组） | **2053** | ✅ **本包唯一可达的官方语料** |
 
 「三千三百多 / 3495」是 **A 口径**，本包没有 DMN 引擎、跑不出来。
@@ -90,7 +90,7 @@ node tooling/tck/run.mjs --label=1130-feel-interval --show-fail=10   # 单组钻
 **IGNORED 登记（NFR-F14，见 `tooling/tck/ignored.json`，理由逐条写死）**
 - 整组（`labels`）：`0076-feel-external-java`（18，`external {java: …}` 要 JVM + 宿主类路径）；
   `0082-feel-coercion`（36，考 **DMN 声明类型层**的强制转换 —— decision/BKM 的 `typeRef`
-  与结果值/实参值之间的校验与强转，以及 decisionService 调用，职责在 `floken-dmn`）。
+  与结果值/实参值之间的校验与强转，以及 decisionService 调用，职责在 `@floken/dmn`）。
 - 单条（`cases`，键是 `label#id`）：`0092#013`（decisionService 调用，与 0082 同族）。
   ⚠️ 单条粒度只给「组内只有这一条越界」的情形 —— 为了一条就把整组免掉是把账做糊涂。
 

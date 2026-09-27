@@ -31,7 +31,7 @@ const nullVal = (src: string): void => {
   expect(evaluate(src).value, `value of ${src}`).toBe(null);
 };
 
-describe('floken-feel · TCK 修复回归 · 词法与字面量', () => {
+describe('@floken/feel · TCK 修复回归 · 词法与字面量', () => {
   it('指数记法 `1.23e4`（TCK 0077/0078 数值边界）', () => {
     expect(evaluate('1.23e4').value).toBe(12300);
     expect(evaluate('1.0E-3').value).toBeCloseTo(0.001, 12);
@@ -60,7 +60,7 @@ describe('floken-feel · TCK 修复回归 · 词法与字面量', () => {
   });
 });
 
-describe('floken-feel · TCK 修复回归 · 区间（Range 一等公民）', () => {
+describe('@floken/feel · TCK 修复回归 · 区间（Range 一等公民）', () => {
   /** 抛出的错误码；没抛返回 `null`（错误码在 `e.code` 上，不在 message 里） */
   const code = (src: string): string | null => {
     try {
@@ -141,7 +141,7 @@ describe('floken-feel · TCK 修复回归 · 区间（Range 一等公民）', ()
   });
 });
 
-describe('floken-feel · TCK 修复回归 · 形参有类型（0050/0056/1101/1102/1141~1144）', () => {
+describe('@floken/feel · TCK 修复回归 · 形参有类型（0050/0056/1101/1102/1141~1144）', () => {
   const catchErr = (src: string) => {
     try {
       evaluate(src);
@@ -229,7 +229,7 @@ describe('floken-feel · TCK 修复回归 · 形参有类型（0050/0056/1101/11
  * `1117-feel-date-and-time-function` / `0079-feel-string-function` 四组的集中失分
  * （合计约 109 条），语义全部由 TCK 逐条反推、再钉在这里防退化。
  */
-describe('floken-feel · TCK 修复回归 · 时间构造器重载与写法（1115/1116/1117）', () => {
+describe('@floken/feel · TCK 修复回归 · 时间构造器重载与写法（1115/1116/1117）', () => {
   const catchErr = (src: string) => {
     try {
       evaluate(src);
@@ -360,7 +360,7 @@ describe('floken-feel · TCK 修复回归 · 时间构造器重载与写法（11
   });
 });
 
-describe('floken-feel · TCK 修复回归 · string() 规范文本（0079）', () => {
+describe('@floken/feel · TCK 修复回归 · string() 规范文本（0079）', () => {
   const catchErr = (src: string) => {
     try {
       evaluate(src);
@@ -411,7 +411,7 @@ describe('floken-feel · TCK 修复回归 · string() 规范文本（0079）', (
   });
 });
 
-describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145/1146/1147）', () => {
+describe('@floken/feel · TCK 修复回归 · 上下文函数族（0057/1140/1145/1146/1147）', () => {
   const err = (src: string) => {
     try {
       evaluate(src);
@@ -573,7 +573,7 @@ describe('floken-feel · TCK 修复回归 · 上下文函数族（0057/1140/1145
 
 // ────────────────────────────────────────────────────────────────
 
-describe('floken-feel · TCK 修复回归 · 迭代序列与函数值（0084 / 0092）', () => {
+describe('@floken/feel · TCK 修复回归 · 迭代序列与函数值（0084 / 0092）', () => {
   const err = (src: string) => {
     try {
       evaluate(src);
@@ -651,7 +651,7 @@ describe('floken-feel · TCK 修复回归 · 迭代序列与函数值（0084 / 0
 
 // ────────────────────────────────────────────────────────────────
 
-describe('floken-feel · TCK 修复回归 · 正则方言（1111 / 1109）', () => {
+describe('@floken/feel · TCK 修复回归 · 正则方言（1111 / 1109）', () => {
   const err = (src: string) => {
     try {
       evaluate(src);
@@ -739,7 +739,7 @@ describe('floken-feel · TCK 修复回归 · 正则方言（1111 / 1109）', () 
  * `product([])`/`stddev([1])`/`{重复键上下文}`）**不属于**参数/类型不符，按 `AGENTS.md §5`
  * 与 TCK `errorResult` 仍须 **THROW** —— 见各文件中保留的 `EVAL_UNDEFINED` 断言。
  */
-describe('floken-feel · TCK 修复回归 · 形参/类型类错误回退为 null（对齐规范 §10.3.2.13.1）', () => {
+describe('@floken/feel · TCK 修复回归 · 形参/类型类错误回退为 null（对齐规范 §10.3.2.13.1）', () => {
   const v = (src: string) => evaluate(src).value;
   /** 仍会抛的错误码（如 `@"…"` 走时间构造器，不经过 call 边界转换）；没抛返回 `null` */
   const code = (src: string): string | null => {

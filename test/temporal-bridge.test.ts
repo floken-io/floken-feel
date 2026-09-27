@@ -1,5 +1,5 @@
 /**
- * `floken-feel/temporal` · JS 侧值桥与算子（`toFeel` 一族）
+ * `@floken/feel/temporal` · JS 侧值桥与算子（`toFeel` 一族）
  *
  * 这些不是 FEEL 内置函数（表达式里的 `date("…")` 早已可用），而是给**宿主 JS 代码**用的：
  * 把 `new Date()` 之类宿主值转成能塞进 `context` 的 FEEL 值，并在 JS 侧直接读分量、做运算。

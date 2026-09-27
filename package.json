@@ -1,5 +1,5 @@
 {
-  "name": "floken-feel",
+  "name": "@floken/feel",
   "version": "0.0.3",
   "description": "FEEL expression language for JavaScript/TypeScript \u2014 parse, evaluate, diagnose",
   "repository": { "type": "git", "url": "git+https://github.com/floken-io/floken-feel.git" },

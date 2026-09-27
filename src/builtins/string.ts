@@ -1,5 +1,5 @@
 /**
- * floken-feel · 字符串内置函数
+ * @floken/feel · 字符串内置函数
  *
  * 字符串位置按 FEEL 规范为 **1-based**，负值表示从末尾倒数。
  * 正则相关函数（`replace` / `matches` / `split`）编译失败时返回 null。

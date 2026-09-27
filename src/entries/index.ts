@@ -1,11 +1,11 @@
 /**
- * floken-feel · 主入口（package 的 `.` 导出 → dist/index.js）
+ * @floken/feel · 主入口（package 的 `.` 导出 → dist/index.js）
  *
  * 本档只做「汇总再导出」，不放任何逻辑：逻辑分别住在
  * `core/`（语言内核）与 `builtins/`（内置函数库）。
  *
  * 公开 API 形态对标 feelin（`{ value, warnings }`），实现完全自研（Q9：feelin 源码只读不拷）。
- * 时间函数不在本入口 —— 见 `floken-feel/temporal`（NFR-F12：核心不静态依赖 temporal）。
+ * 时间函数不在本入口 —— 见 `@floken/feel/temporal`（NFR-F12：核心不静态依赖 temporal）。
  */
 
 export {

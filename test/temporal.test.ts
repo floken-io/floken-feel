@@ -10,7 +10,7 @@ import {
 } from '../src/entries/temporal.js';
 import { evaluate, isTemporal, FeelNotLoadedError } from '../src/entries/index.js';
 
-describe('floken-feel/temporal · 时间类型与函数', () => {
+describe('@floken/feel/temporal · 时间类型与函数', () => {
   beforeAll(async () => {
     await ensureTemporal();
   });

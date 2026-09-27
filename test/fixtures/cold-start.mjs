@@ -1,7 +1,7 @@
 /**
  * 冷启动探针（在**全新进程**里跑）
  *
- * 为什么必须是子进程：`floken-feel/temporal` 的注册是**全局且不可逆**的，
+ * 为什么必须是子进程：`@floken/feel/temporal` 的注册是**全局且不可逆**的，
  * 同一个进程里只要有任何一个模块 import 过它，"未加载"的场景就再也复现不出来。
  * 而"未加载时必须抛带修复提示的错误"（AC-F7）恰恰是**进程启动态**的性质 ——
  * 只有在真正干净的进程里测，才算数。
@@ -59,7 +59,7 @@ if (mode === 'polyfill-only') {
   Object.defineProperty(globalThis, 'Temporal', {
     configurable: true,
     get() {
-      throw new Error('floken-feel read globalThis.Temporal');
+      throw new Error('@floken/feel read globalThis.Temporal');
     },
   });
   try {

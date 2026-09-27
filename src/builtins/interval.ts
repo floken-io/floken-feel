@@ -1,5 +1,5 @@
 /**
- * floken-feel · 区间关系内置函数（DMN 1.4 的 14 个区间函数）
+ * @floken/feel · 区间关系内置函数（DMN 1.4 的 14 个区间函数）
  *
  * `before` / `after` / `meets` / `met by` / `overlaps` / `overlaps before` / `overlaps after` /
  * `finishes` / `finished by` / `includes` / `during` / `starts` / `started by` / `coincides`

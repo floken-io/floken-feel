@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>floken-feel · 浏览器实时错误提示 demo</title>
+<title>@floken/feel · 浏览器实时错误提示 demo</title>
 <!--
   ★ 这个页面只用原生 ES Module，没有打包器、没有 CDN、没有任何构建步骤。
     直接 import 本地产物 dist/editor.js（纯 ESM，零 Node API、零 DOM 依赖），
@@ -138,7 +138,7 @@
 </style>
 </head>
 <body>
-<h1>floken-feel · 网页端 FEEL 实时错误提示</h1>
+<h1>@floken/feel · 网页端 FEEL 实时错误提示</h1>
 <p class="sub">
   原生 ES Module 直接加载 <code>dist/editor.js</code>（<code>diagnose</code> + <code>highlight</code>），
   零打包器、零 Node 依赖。边打字边出：语法着色 + 波浪线 + 错误码 + 定位 + "可能漏了什么"。
@@ -189,7 +189,7 @@
 
 <script type="module">
   // 相对路径直接 import 产物；浏览器不认识 bare specifier，所以这里用相对路径 ——
-  // 真实项目里由打包器/importmap 把 'floken-feel/editor' 解析到这两个文件。
+  // 真实项目里由打包器/importmap 把 '@floken/feel/editor' 解析到这两个文件。
   import { diagnose, highlight, parseWithDiagnostics, tokens } from '../dist/editor.js';
   import { evaluate } from '../dist/index.js';
 

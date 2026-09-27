@@ -1,5 +1,5 @@
 /**
- * floken-feel · 函数值内置函数
+ * @floken/feel · 函数值内置函数
  *
  * 处理「一等函数」（`function(a,b) …` / 宿主注入的 JS 函数）与 `is()`。
  */

@@ -1,5 +1,5 @@
 /**
- * floken-feel · unary tests 子入口（→ dist/unary-tests.js）
+ * @floken/feel · unary tests 子入口（→ dist/unary-tests.js）
  *
  * 决策表输入项求值。形态对标 feelin：
  * `unaryTest('< 10', { '?': 5 }) → { value: true, warnings: [] }`

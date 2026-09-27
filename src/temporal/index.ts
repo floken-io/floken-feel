@@ -1,5 +1,5 @@
 /**
- * floken-feel · temporal 子入口
+ * @floken/feel · temporal 子入口
  *
  * ★ 时间实现源（ADR Q32，2026-09-25 用户拍板）：**统一使用 `temporal-polyfill`**。
  * - 落点是 `temporal-polyfill/implementation`（**不是包根**，理由见 `TEMPORAL_SPECIFIER`）；
@@ -67,7 +67,7 @@ const TEMPORAL_SPECIFIER = 'temporal-polyfill/implementation';
 export function temporalMissingError(cause?: unknown): FeelEnvError {
   const details: Record<string, unknown> = {
     dependency: 'temporal-polyfill',
-    subpath: 'floken-feel/temporal',
+    subpath: '@floken/feel/temporal',
   };
   if (cause !== undefined) details.cause = String(cause);
   return new FeelEnvError(
@@ -84,7 +84,7 @@ let loaded: TemporalNS | null = null;
 
 /**
  * 确保时间实现可用。应在调用时间函数前 await 一次
- * （`floken-feel/temporal` 入口已在模块顶层 await 过，走公开入口的宿主无需自己调）。
+ * （`@floken/feel/temporal` 入口已在模块顶层 await 过，走公开入口的宿主无需自己调）。
  *
  * @throws FeelEnvError `FEEL_ENV_TEMPORAL_MISSING` —— 依赖没装。
  */
@@ -1282,7 +1282,7 @@ function combineDateTime(dv: Value, tv: Value, fnName: string): Value {
       nanosecond: tr.nanosecond,
     });
     /*
-     * ★ 必须把 `src` 补上（此前传 `undefined`）：
+     * ★ 必须把 `src` 补上：
      *   ① `.time offset` 只能从原文反解 —— `PlainDateTime` 不保存偏移，
      *      于是 `date and time(date(…), time("00:00:01-01:00")).time offset` 会得 null
      *      （TCK 0007 的 `cOffset` 要求 `-PT1H`）；
@@ -1670,7 +1670,7 @@ export const TEMPORAL_BUILTINS: Record<string, NativeFn> = {
   /**
    * ★ **两个同类时间值相减** → duration（DMN 1.5 §10.3.1.3 表的后三档）。
    *
-   * 规范给的三档（此前 core 完全没接这条路径 → 一律 `null`）：
+   * 规范给的三档：
    *   `date - date`         → days and time duration，**按天**（`largestUnit: 'days'`）
    *   `time - time`         → days and time duration，**按小时**
    *   `date and time - date and time` → days and time duration，**按天**
