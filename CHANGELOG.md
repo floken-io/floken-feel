@@ -3,6 +3,19 @@
 本包遵循 [Semantic Versioning](https://semver.org/)，格式参考 [Keep a Changelog](https://keepachangelog.com/)。
 0.x 阶段跨包依赖写 `>=x.y.z <1.0.0`（不用 `^`）。
 
+## 0.0.5 — 2026-11-02
+
+### 修正
+
+- **决策表「无关条目」不再报语法错**：input entry 写 `-`（或留空 / 纯空白）时，
+  按规范视为「该输入对本条规则无关、恒命中」——
+  `unaryTest('-')` / `unaryTest('')` → `{ value: true }`（`?` 为 `null` 也成立），
+  `parseUnaryTests()` 返回空数组，`diagnoseUnaryTests()` 不再误报。
+  依据：OMG DMN 1.0 §8.2.8（`-` = any input value）、Camunda 文档（empty input entry is always satisfied）。
+  只认**孤立**的 `-`：`-5` 仍是「等于 -5」，`-, 1` 等写法照旧按语法错抛。
+- TCK 语料对该形态零覆盖（B 口径 79 组里没有 unary tests 组），故双口径分数不变：
+  **1995/1995（100.0%）**。
+
 ## 0.0.4 — 2026-09-27
 
 ### 文档

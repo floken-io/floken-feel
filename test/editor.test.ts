@@ -37,6 +37,12 @@ describe('@floken-io/feel/editor · 诊断', () => {
     expect(diagnoseUnaryTests('[1..')).toHaveLength(1);
   });
 
+  it('决策表无关条目 -/空 不报诊断（建模期不能把合法写法拒之门外）', () => {
+    expect(diagnoseUnaryTests('-')).toEqual([]);
+    expect(diagnoseUnaryTests('')).toEqual([]);
+    expect(diagnoseUnaryTests('  ')).toEqual([]);
+  });
+
   it('分词供高亮', () => {
     const t = tokens('a + 1');
     expect(t.length).toBeGreaterThan(0);

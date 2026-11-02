@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { evaluate, unaryTest, parseExpression, isContext } from '../src/entries/index.js';
+import { evaluate, unaryTest, parseExpression, parseUnaryTests, isContext } from '../src/entries/index.js';
 
 describe('@floken-io/feel · evaluate 基础', () => {
   it('算术与优先级', () => {
@@ -206,6 +206,26 @@ describe('@floken-io/feel · unaryTest（对标 feelin）', () => {
   it('列表测试项', () => {
     expect(unaryTest('[1, 2, 3]', { '?': 2 }).value).toBe(true);
     expect(unaryTest('[1, 2, 3]', { '?': 9 }).value).toBe(false);
+  });
+
+  it('无关条目 -/空/纯空白 = 恒命中（决策表 input entry）', () => {
+    // OMG DMN 1.0 §8.2.8：'-' 表示"任意输入值"（该条件对本条规则无关）
+    for (const src of ['-', '', '   ', '\t', ' - ']) {
+      expect(unaryTest(src, { '?': 42 }).value).toBe(true);
+      expect(unaryTest(src, { '?': null }).value).toBe(true);
+      expect(unaryTest(src).value).toBe(true); // 连 ? 都没绑也恒命中
+    }
+    // 负数字面量不受影响：'-5' 仍是"等于 -5"
+    expect(unaryTest('-5', { '?': -5 }).value).toBe(true);
+    expect(unaryTest('-5', { '?': 5 }).value).toBe(false);
+    // 但只有"孤立 -"才是无关条目，其余写法照旧报语法错
+    expect(() => unaryTest('-, 1', { '?': 1 })).toThrow();
+  });
+
+  it('parseUnaryTests 对无关条目返回空数组（建模期校验不误报）', () => {
+    expect(parseUnaryTests('-')).toEqual([]);
+    expect(parseUnaryTests('')).toEqual([]);
+    expect(parseUnaryTests('  ')).toEqual([]);
   });
 
   it('返回形态与 feelin 一致：{ value, warnings }', () => {

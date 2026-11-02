@@ -823,8 +823,18 @@ export function parseExpression(src: string, opts: ParseOptions = {}): Node {
   return new Parser(significant(src, spaced, opts.knownNames), src).parse();
 }
 
-/** 解析 unary tests（决策表输入项），返回测试项数组（逗号 = OR） */
+/**
+ * 解析 unary tests（决策表输入项），返回测试项数组（逗号 = OR）。
+ *
+ * ★ **无关条目**（`-` / 空串 / 纯空白）**返回空数组**，语义是「该输入对本条规则无关、恒命中」
+ *   —— OMG DMN 1.0 §8.2.8：「A dash symbol ('-') can be used to mean any input value,
+ *   i.e., the input is irrelevant for the containing rule」；Camunda 文档：empty input
+ *   entry「is always satisfied … In FEEL, an empty input entry is represented by a `-`」。
+ *   空数组**只**由这三种输入产生；`- 5`、`--`、`-,1` 等其它写法照旧按语法错抛。
+ */
 export function parseUnaryTests(src: string, opts: ParseOptions = {}): Node[] {
   const spaced = opts.spacedNames ?? SPACED_NAMES;
+  const trimmed = src.trim();
+  if (trimmed === '' || trimmed === '-') return [];
   return new Parser(significant(src, spaced, opts.knownNames), src).parseTests();
 }

@@ -1460,6 +1460,9 @@ export function evaluateStrict(
 /**
  * 求值 unary tests（决策表输入项）。
  * context 中以 `?` 表示被测输入值；多个测试项用逗号分隔，语义为 OR。
+ *
+ * ★ 无关条目（`-` / 空 / 纯空白）→ 无测试项 → **恒命中**（返回 `true`，
+ *   即使 `?` 为 `null`）。依据见 `parseUnaryTests` 的注释。
  */
 export function unaryTest(
   src: string,
@@ -1470,6 +1473,8 @@ export function unaryTest(
   const warnings: Diagnostic[] = [];
   const ctx = toFeelContext(context);
   const terms = parseUnaryTests(src, { knownNames: new Set(ctx.keys()) });
+  // 无关条目（`-` / 空 / 纯空白）→ 无测试项 → 恒命中
+  if (terms.length === 0) return { value: true, warnings };
   for (const term of terms) enforceLimits(term, options);
   const runtime = buildRuntime(options);
   const results = terms.map((t) =>
